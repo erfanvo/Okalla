@@ -33,7 +33,7 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
 
     setState(() {
       _isProcessing = true;
-      _statusMessage = 'در حال دریافت اطلاعات از سرور...';
+      _statusMessage = 'در حال دریافت اطلاعات...';
     });
 
     try {
@@ -43,55 +43,65 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
       }
       
       final Map<String, dynamic> data = json.decode(response.body);
-
-      setState(() => _statusMessage = 'در حال همگام‌سازی کوکی‌ها...');
+      setState(() => _statusMessage = 'در حال پاکسازی و ساخت کوکی‌های امن...');
 
       final CookieManager cookieManager = CookieManager.instance();
       await cookieManager.deleteAllCookies();
 
-      // استخراج قطعی و بدون خطای تایپ (Type Error) برای LocalStorage
+      // ۱. استخراج امن LocalStorage
       List<dynamic> localData = [];
       if (data['origins'] != null && data['origins'] is List && (data['origins'] as List).isNotEmpty) {
         List<dynamic> originsList = data['origins'];
-        dynamic matchedOrigin = originsList[0]; // پیش‌فرض
-        
-        // پیدا کردن ایمنِ اریجین اکالا
+        dynamic matchedOrigin = originsList[0]; 
         for (var o in originsList) {
           if (o is Map && o['origin'] != null && o['origin'].toString().contains('okala.com')) {
             matchedOrigin = o;
             break;
           }
         }
-        
         if (matchedOrigin is Map && matchedOrigin['localStorage'] != null) {
           localData = matchedOrigin['localStorage'];
         }
       }
 
-      // تزریق دقیق کوکی‌ها با پارامترهای ایمنِ مرورگر
-      List<dynamic> cookies = data['cookies'] ?? [];
-      for (var c in cookies) {
-        String domain = c['domain'] ?? ".okala.com";
-        await cookieManager.setCookie(
-          url: WebUri("https://www.okala.com"),
-          name: c['name'],
-          value: c['value'],
-          domain: domain,
-          path: c['path'] ?? "/",
-          isSecure: c['secure'] ?? true,
-          sameSite: HTTPCookieSameSitePolicy.NONE,
-        );
+      // ۲. استخراج کوکی‌های بکاپ در صورتی که آرایه کوکی‌ها خالی باشد (دقیقاً مشابه اکستنشن)
+      String? fallbackTokenMs;
+      String? fallbackRefresh;
+      for (var item in localData) {
+        if (item['name'] == 'tokenMS') fallbackTokenMs = item['value'];
+        if (item['name'] == 'refresh_token') fallbackRefresh = item['value'];
       }
 
-      setState(() => _statusMessage = 'آماده‌سازی مرورگر امن...');
+      // ۳. تزریق کوکی‌ها با اجبار دامنه (Force Domain) برای جلوگیری از خطای ۴۰۱ و لاگ‌اوت شدن
+      List<dynamic> cookies = data['cookies'] ?? [];
+      if (cookies.isNotEmpty) {
+        for (var c in cookies) {
+          await cookieManager.setCookie(
+            url: WebUri("https://www.okala.com"),
+            name: c['name'],
+            value: c['value'],
+            domain: ".okala.com", // کلید طلایی: اجبار روی دامنه‌ی مادر
+            path: c['path'] ?? "/",
+            isSecure: true,
+            sameSite: HTTPCookieSameSitePolicy.NONE,
+          );
+        }
+      } else {
+        // جایگذاری کوکی‌های حیاتی اگر در JSON نبودند
+        if (fallbackTokenMs != null) {
+          await cookieManager.setCookie(url: WebUri("https://www.okala.com"), name: "tokenMS", value: fallbackTokenMs, domain: ".okala.com", path: "/", isSecure: true, sameSite: HTTPCookieSameSitePolicy.NONE);
+        }
+        if (fallbackRefresh != null) {
+          await cookieManager.setCookie(url: WebUri("https://www.okala.com"), name: "refresh_token", value: fallbackRefresh, domain: ".okala.com", path: "/", isSecure: true, sameSite: HTTPCookieSameSitePolicy.NONE);
+        }
+      }
 
+      setState(() => _statusMessage = 'ورود به مرورگر امن...');
       if (!mounted) return;
       
       Navigator.push(
         context,
-        MaterialPageRoute(
-          builder: (context) => SecureBrowserScreen(localData: localData),
-        ),
+        MaterialPageRoute(builder: (context) => SecureBrowserScreen(localData: localData)),
       ).then((_) {
         setState(() {
           _isProcessing = false;
@@ -178,10 +188,9 @@ class _SecureBrowserScreenState extends State<SecureBrowserScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // کدگذاری داده‌ها برای جلوگیری از تداخل رشته‌های جاوااسکریپت
     final String base64Data = base64Encode(utf8.encode(jsonEncode(widget.localData)));
 
-    // رفرش کردن همان صفحه اصلی به جای رفتن به پروفایل (دقیقاً مشابه اکستنشن کروم)
+    // این کد فقط یک بار فراخوانی خواهد شد و جلوی لوپِ لاگ‌اوت را می‌گیرد
     final String injectionJs = """
       try {
         var decodedData = decodeURIComponent(escape(window.atob('$base64Data')));
@@ -191,8 +200,6 @@ class _SecureBrowserScreenState extends State<SecureBrowserScreen> {
         items.forEach(item => {
           localStorage.setItem(item.name, item.value);
         });
-        
-        // رفرش صفحه برای هیدراته شدن سایت اکالا بدون فریز
         window.location.replace('https://www.okala.com/');
       } catch(e) {
         console.error("Storage Error:", e);
@@ -213,15 +220,15 @@ class _SecureBrowserScreenState extends State<SecureBrowserScreen> {
               javaScriptEnabled: true,
               domStorageEnabled: true,
               thirdPartyCookiesEnabled: true,
-              clearCache: false,
+              clearCache: true, // پاک کردن کش برای جلوگیری از تداخل قدیمی‌ها
             ),
             onLoadStop: (controller, url) async {
-              // مرحله اول: سایت لود شده، زمان تزریق دیتا و رفرش است
+              // وقتی سایت کاملاً لود شد، فقط یک‌بار دیتا را شلیک می‌کنیم
               if (!_hasInjectedData) {
                 _hasInjectedData = true; 
                 await controller.evaluateJavascript(source: injectionJs);
               } 
-              // مرحله دوم: سایت با دیتای جدید روی ریشه رفرش شده، پس پرده لودینگ برداشته شود
+              // مرحله دوم: سایت با دیتای جدید رفرش شده و ثابت مانده است
               else {
                 setState(() {
                   _isInjecting = false;
@@ -230,7 +237,6 @@ class _SecureBrowserScreenState extends State<SecureBrowserScreen> {
             },
           ),
           
-          // نمایش لودینگ تا پایان عملیات رفرشِ پشت صحنه
           if (_isInjecting)
             Container(
               color: Colors.white,
@@ -240,7 +246,7 @@ class _SecureBrowserScreenState extends State<SecureBrowserScreen> {
                   children: const [
                     CircularProgressIndicator(color: Colors.indigo),
                     SizedBox(height: 16),
-                    Text('در حال انتقال امن...', style: TextStyle(color: Colors.indigo, fontWeight: FontWeight.bold)),
+                    Text('در حال انتقال امن و دائمی...', style: TextStyle(color: Colors.indigo, fontWeight: FontWeight.bold)),
                   ],
                 ),
               ),
