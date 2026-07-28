@@ -34,64 +34,55 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
 
     setState(() {
       _isProcessing = true;
-      _statusMessage = 'در حال دریافت اطلاعات...';
+      _statusMessage = 'در حال دریافت اطلاعات از سرور...';
     });
 
     try {
       final response = await http.get(Uri.parse(endpointUrl));
       if (response.statusCode != 200) {
-        throw Exception('خطا در ارتباط با سرور.');
+        throw Exception('لینک نامعتبر است یا منقضی شده.');
       }
       
       final Map<String, dynamic> data = json.decode(response.body);
 
-      setState(() => _statusMessage = 'در حال همگام‌سازی ساختار کوکی‌ها و حافظه...');
+      setState(() => _statusMessage = 'در حال پاکسازی و پیکربندی امن...');
 
       final CookieManager cookieManager = CookieManager.instance();
       await cookieManager.deleteAllCookies();
 
+      // استخراج امن LocalStorage با پشتیبانی از چند Origin احتمالی
       List<dynamic> localData = [];
-      if (data['origins'] != null && data['origins'].isNotEmpty) {
-        localData = data['origins'][0]['localStorage'] ?? [];
+      if (data['origins'] != null) {
+        final matchedOrigin = data['origins'].firstWhere(
+          (o) => o['origin']?.contains('okala.com') ?? false,
+          orElse: () => data['origins'][0],
+        );
+        localData = matchedOrigin['localStorage'] ?? [];
       }
 
+      // تنظیم کوکی‌ها دقیقاً مشابه رفتار اکستنشن
       List<dynamic> cookies = data['cookies'] ?? [];
-      if (cookies.isEmpty) {
-        final tokenMsObj = localData.firstWhere((e) => e['name'] == 'tokenMS', orElse: () => null);
-        final refreshObj = localData.firstWhere((e) => e['name'] == 'refresh_token', orElse: () => null);
-        
-        if (tokenMsObj != null) cookies.add({'name': 'tokenMS', 'value': tokenMsObj['value'], 'domain': '.okala.com', 'path': '/', 'secure': true});
-        if (refreshObj != null) cookies.add({'name': 'refresh_token', 'value': refreshObj['value'], 'domain': '.okala.com', 'path': '/', 'secure': true});
-      }
-
-      // کلید حل مشکل: استفاده از دامنه و پارامترهای واقعیِ خودِ کوکی در جیسون
       for (var c in cookies) {
         String domain = c['domain'] ?? ".okala.com";
-        String targetUrl = "https://www.okala.com";
-        if (domain.startsWith('.')) {
-          targetUrl = "https://${domain.substring(1)}";
-        } else {
-          targetUrl = "https://$domain";
-        }
-
         await cookieManager.setCookie(
-          url: WebUri(targetUrl),
+          url: WebUri("https://www.okala.com"),
           name: c['name'],
           value: c['value'],
           domain: domain,
           path: c['path'] ?? "/",
-          isSecure: c['secure'] ?? false,
+          isSecure: c['secure'] ?? true,
+          sameSite: CookieSameSitePolicy.NONE, // معادل no_restriction در اکستنشن
         );
       }
 
-      setState(() => _statusMessage = 'آماده‌سازی مرورگر امن...');
+      setState(() => _statusMessage = 'آماده‌سازی مرورگر...');
 
       if (!mounted) return;
       
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (context) => SecureBrowserScreen(localData: localData, cookies: cookies),
+          builder: (context) => SecureBrowserScreen(localData: localData),
         ),
       ).then((_) {
         setState(() {
@@ -166,32 +157,30 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
 
 class SecureBrowserScreen extends StatelessWidget {
   final List<dynamic> localData;
-  final List<dynamic> cookies;
 
-  const SecureBrowserScreen({Key? key, required this.localData, required this.cookies}) : super(key: key);
+  const SecureBrowserScreen({Key? key, required this.localData}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     final String base64Data = base64Encode(utf8.encode(jsonEncode(localData)));
 
+    // اسکریپت تزریق استوریج دقیقاً مشابه پترن اکستنشن
     final injectionScript = UserScript(
       source: """
         try {
           var decodedData = decodeURIComponent(escape(window.atob('$base64Data')));
           var items = JSON.parse(decodedData);
-          window.localStorage.clear();
-          window.sessionStorage.clear();
-          for (var i = 0; i < items.length; i++) {
-            window.localStorage.setItem(items[i].name, items[i].value);
-          }
+          localStorage.clear();
+          sessionStorage.clear();
+          items.forEach(item => {
+            localStorage.setItem(item.name, item.value);
+          });
         } catch(e) {
-          console.error("Storage Error:", e);
+          console.error("Storage Injection Error:", e);
         }
       """,
       injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
     );
-
-    final String cookieHeader = cookies.map((c) => "${c['name']}=${c['value']}").join("; ");
 
     return Scaffold(
       appBar: AppBar(
@@ -200,18 +189,23 @@ class SecureBrowserScreen extends StatelessWidget {
         iconTheme: const IconThemeData(color: Colors.white),
       ),
       body: InAppWebView(
-        initialUrlRequest: URLRequest(
-          url: WebUri("https://www.okala.com/profile"),
-          headers: {"Cookie": cookieHeader},
-        ),
+        // باز کردن ریشه سایت برای اجرای صحیح Bootstrap و State Hydration (همانند اکستنشن)
+        initialUrlRequest: URLRequest(url: WebUri("https://www.okala.com/")),
         initialUserScripts: UnmodifiableListView<UserScript>([injectionScript]),
         initialSettings: InAppWebViewSettings(
           javaScriptEnabled: true,
           domStorageEnabled: true,
           thirdPartyCookiesEnabled: true,
-          mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
+          clearCache: false,
         ),
+        onLoadStop: (controller, url) async {
+          // پس از لود اولیه ریشه، انتقال امن و خودکار به صفحه پروفایل برای کاربر
+          if (url.toString() == "https://www.okala.com/" || url.toString() == "https://www.okala.com") {
+            await controller.loadUrl(urlRequest: URLRequest(url: WebUri("https://www.okala.com/profile")));
+          }
+        },
       ),
     );
   }
 }
+
