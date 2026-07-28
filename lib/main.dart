@@ -50,7 +50,6 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
       final CookieManager cookieManager = CookieManager.instance();
       await cookieManager.deleteAllCookies();
 
-      // استخراج امن LocalStorage با پشتیبانی از چند Origin احتمالی
       List<dynamic> localData = [];
       if (data['origins'] != null) {
         final matchedOrigin = data['origins'].firstWhere(
@@ -60,7 +59,6 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
         localData = matchedOrigin['localStorage'] ?? [];
       }
 
-      // تنظیم کوکی‌ها دقیقاً مشابه رفتار اکستنشن
       List<dynamic> cookies = data['cookies'] ?? [];
       for (var c in cookies) {
         String domain = c['domain'] ?? ".okala.com";
@@ -71,7 +69,7 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
           domain: domain,
           path: c['path'] ?? "/",
           isSecure: c['secure'] ?? true,
-          sameSite: CookieSameSitePolicy.NONE, // معادل no_restriction در اکستنشن
+          sameSite: HTTPCookieSameSitePolicy.NONE, // اصلاح نام کلاس به شکل صحیح
         );
       }
 
@@ -164,7 +162,6 @@ class SecureBrowserScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final String base64Data = base64Encode(utf8.encode(jsonEncode(localData)));
 
-    // اسکریپت تزریق استوریج دقیقاً مشابه پترن اکستنشن
     final injectionScript = UserScript(
       source: """
         try {
@@ -189,7 +186,6 @@ class SecureBrowserScreen extends StatelessWidget {
         iconTheme: const IconThemeData(color: Colors.white),
       ),
       body: InAppWebView(
-        // باز کردن ریشه سایت برای اجرای صحیح Bootstrap و State Hydration (همانند اکستنشن)
         initialUrlRequest: URLRequest(url: WebUri("https://www.okala.com/")),
         initialUserScripts: UnmodifiableListView<UserScript>([injectionScript]),
         initialSettings: InAppWebViewSettings(
@@ -199,7 +195,6 @@ class SecureBrowserScreen extends StatelessWidget {
           clearCache: false,
         ),
         onLoadStop: (controller, url) async {
-          // پس از لود اولیه ریشه، انتقال امن و خودکار به صفحه پروفایل برای کاربر
           if (url.toString() == "https://www.okala.com/" || url.toString() == "https://www.okala.com") {
             await controller.loadUrl(urlRequest: URLRequest(url: WebUri("https://www.okala.com/profile")));
           }
@@ -208,4 +203,3 @@ class SecureBrowserScreen extends StatelessWidget {
     );
   }
 }
-
