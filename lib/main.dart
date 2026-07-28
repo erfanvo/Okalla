@@ -6,15 +6,9 @@ import 'dart:collection';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(MaterialApp(
+  runApp(const MaterialApp(
     debugShowCheckedModeBanner: false,
-    title: 'HyperLink',
-    theme: ThemeData(
-      primarySwatch: Colors.indigo,
-      scaffoldBackgroundColor: const Color(0xFFF4F6F8),
-      fontFamily: 'Roboto',
-    ),
-    home: const HyperLinkScreen(),
+    home: HyperLinkScreen(),
   ));
 }
 
@@ -34,24 +28,24 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
     final String endpointUrl = _linkController.text.trim();
     
     if (endpointUrl.isEmpty) {
-      setState(() => _statusMessage = 'Error: Please provide a valid endpoint URL.');
+      setState(() => _statusMessage = 'لطفاً لینک را وارد کنید.');
       return;
     }
 
     setState(() {
       _isProcessing = true;
-      _statusMessage = 'Establishing secure connection...';
+      _statusMessage = 'در حال دریافت اطلاعات...';
     });
 
     try {
       final response = await http.get(Uri.parse(endpointUrl));
       if (response.statusCode != 200) {
-        throw Exception('Failed to communicate with the server.');
+        throw Exception('خطا در ارتباط با سرور.');
       }
       
       final Map<String, dynamic> data = json.decode(response.body);
 
-      setState(() => _statusMessage = 'Configuring local session environment...');
+      setState(() => _statusMessage = 'در حال تنظیم کوکی‌ها و حافظه...');
 
       final CookieManager cookieManager = CookieManager.instance();
       await cookieManager.deleteAllCookies();
@@ -70,22 +64,22 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
         if (refreshObj != null) cookies.add({'name': 'refresh_token', 'value': refreshObj['value']});
       }
 
+      // تنظیم دقیق کوکی‌ها برای دامنه‌ی اکالا
       for (var c in cookies) {
         await cookieManager.setCookie(
           url: WebUri("https://www.okala.com"),
           name: c['name'],
           value: c['value'],
-          domain: c['domain'] ?? ".okala.com",
-          path: c['path'] ?? "/",
+          domain: ".okala.com",
+          path: "/",
           isSecure: true,
         );
       }
 
-      setState(() => _statusMessage = 'Connection established successfully.');
+      setState(() => _statusMessage = 'آماده‌سازی مرورگر امن...');
 
       if (!mounted) return;
       
-      // در اینجا علاوه بر استوریج، کوکی‌ها را هم به صفحه بعد می‌فرستیم
       Navigator.push(
         context,
         MaterialPageRoute(
@@ -101,7 +95,7 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
 
     } catch (e) {
       setState(() {
-        _statusMessage = 'Error: ${e.toString()}';
+        _statusMessage = 'خطا: ${e.toString()}';
         _isProcessing = false;
       });
     }
@@ -110,6 +104,7 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: const Color(0xFFF4F6F8),
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24.0),
@@ -118,72 +113,39 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.circular(16.0),
-              boxShadow: const [
-                BoxShadow(color: Colors.black12, blurRadius: 20, offset: Offset(0, 8)),
-              ],
+              boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 20, offset: Offset(0, 8))],
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Container(
-                  padding: const EdgeInsets.all(16.0),
-                  decoration: BoxDecoration(
-                    color: Colors.indigo.shade50,
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(Icons.security_rounded, color: Colors.indigo.shade700, size: 40),
-                ),
-                const SizedBox(height: 20),
-                Text(
-                  'HyperLink Workspace',
-                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.indigo.shade900),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Secure Session Initialization',
-                  style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
-                ),
-                const SizedBox(height: 36),
+                const Icon(Icons.security_rounded, color: Colors.indigo, size: 48),
+                const SizedBox(height: 16),
+                const Text('تزریق‌گر امن اکالا', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 24),
                 TextField(
                   controller: _linkController,
                   decoration: InputDecoration(
-                    hintText: 'Enter Endpoint URL...',
+                    hintText: 'لینک ربات را اینجا وارد کنید...',
                     filled: true,
                     fillColor: Colors.grey.shade50,
-                    prefixIcon: Icon(Icons.link, color: Colors.grey.shade400),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade300)),
-                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade300)),
-                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.indigo.shade400, width: 2)),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
                   ),
                 ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 20),
                 SizedBox(
                   width: double.infinity,
-                  height: 52,
+                  height: 48,
                   child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.indigo.shade600,
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    ),
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
                     onPressed: _isProcessing ? null : _initializeConnection,
                     child: _isProcessing
-                        ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5))
-                        : const Text('Initialize Connection', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.white)),
+                        ? const CircularProgressIndicator(color: Colors.white)
+                        : const Text('ورود به اکانت', style: TextStyle(color: Colors.white, fontSize: 16)),
                   ),
                 ),
                 if (_statusMessage.isNotEmpty) ...[
-                  const SizedBox(height: 20),
-                  Text(
-                    _statusMessage,
-                    style: TextStyle(
-                      color: _statusMessage.contains('Error') ? Colors.red.shade700 : Colors.teal.shade700,
-                      fontWeight: FontWeight.w500,
-                      fontSize: 13,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
+                  const SizedBox(height: 16),
+                  Text(_statusMessage, style: TextStyle(color: _statusMessage.contains('خطا') ? Colors.red : Colors.green, fontWeight: FontWeight.w500), textAlign: TextAlign.center),
                 ]
               ],
             ),
@@ -202,10 +164,9 @@ class SecureBrowserScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // ۱. رمزنگاری کامل داده‌ها به Base64 برای جلوگیری از خطای نگارشی در جاوااسکریپت (حفظ نام‌های فارسی و JSON)
+    // کدگذاری امن داده‌ها برای جلوگیری از تداخل کاراکترها
     final String base64Data = base64Encode(utf8.encode(jsonEncode(localData)));
 
-    // ۲. تزریق امن داده‌ها قبل از تولد صفحه
     final injectionScript = UserScript(
       source: """
         try {
@@ -217,35 +178,30 @@ class SecureBrowserScreen extends StatelessWidget {
             window.localStorage.setItem(items[i].name, items[i].value);
           }
         } catch(e) {
-          console.error("Storage Injection Error:", e);
+          console.error("Storage Error:", e);
         }
       """,
       injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
     );
 
-    // ۳. کلید طلایی: ساخت هدر کوکی برای ارسال در درخواست اول (رفع مشکل نیامدن نام کاربری و فریز شدن سایت)
-    final String cookieHeader = cookies.map((c) => "\${c['name']}=\${c['value']}").join("; ");
+    // ساخت هدر کوکی جهت ارسال همزمان با درخواست اولیه صفحه
+    final String cookieHeader = cookies.map((c) => "${c['name']}=${c['value']}").join("; ");
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('HyperLink Secure Browser', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-        backgroundColor: Colors.indigo.shade900,
+        title: const Text('مرورگر امن اکالا', style: TextStyle(color: Colors.white)),
+        backgroundColor: Colors.indigo,
         iconTheme: const IconThemeData(color: Colors.white),
-        centerTitle: true,
-        elevation: 0,
       ),
       body: InAppWebView(
         initialUrlRequest: URLRequest(
           url: WebUri("https://www.okala.com/profile"),
-          headers: {
-            "Cookie": cookieHeader // این خط سرور اکالا را مجبور می‌کند شما را لاگین شده ببیند
-          }
+          headers: {"Cookie": cookieHeader},
         ),
         initialUserScripts: UnmodifiableListView<UserScript>([injectionScript]),
         initialSettings: InAppWebViewSettings(
           javaScriptEnabled: true,
           domStorageEnabled: true,
-          clearCache: false,
           thirdPartyCookiesEnabled: true,
           mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
         ),
