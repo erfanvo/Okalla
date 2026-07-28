@@ -24,28 +24,33 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Clean Old React Native Files & Initialize App Structure
+      - name: Clean and Rebuild Android Platform
         run: |
-          # 1. پاک کردن ردپاهای پروژه ری‌اکت نیتیو قبلی تا فلاتر بتواند هسته خودش را بسازد
-          rm -rf android ios web macos windows linux
+          # ۱. حذف کامل هرگونه فایل اندرویدی قدیمی یا ری‌اکت نیتیو
+          rm -rf android
           
-          # 2. ساخت هسته بکر و تمیز فلاتر
-          flutter create --project-name hyperlink --org com.hyperlink.app .
+          # ۲. اجبار فلاتر به ساخت مجدد و کامل پلتفرم اندروید
+          flutter create --platforms=android --project-name hyperlink --org com.hyperlink.app .
           
-          # 3. ارتقای بومی نسخه اندروید جهت جلوگیری از کرش پکیج مرورگر
-          sed -i 's/flutter.minSdkVersion/24/g' android/app/build.gradle
-          sed -i 's/minSdkVersion 16/minSdkVersion 24/g' android/app/build.gradle
-          sed -i 's/minSdkVersion 19/minSdkVersion 24/g' android/app/build.gradle
-          sed -i 's/minSdkVersion 21/minSdkVersion 24/g' android/app/build.gradle
+          # ۳. ارتقای نسخه اندروید در تمامی فرمت‌های احتمالی (gradle و kts)
+          sed -i 's/flutter.minSdkVersion/24/g' android/app/build.gradle*
+          sed -i 's/minSdkVersion 16/minSdkVersion 24/g' android/app/build.gradle*
+          sed -i 's/minSdkVersion 19/minSdkVersion 24/g' android/app/build.gradle*
+          sed -i 's/minSdkVersion 21/minSdkVersion 24/g' android/app/build.gradle*
+          
+          # ۴. افزودن دسترسی اینترنت به صورت مستقیم
+          sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET"/>' android/app/src/main/AndroidManifest.xml
 
       - name: Install Dependencies
         run: flutter pub get
 
       - name: Patch InAppWebView Gradle Compatibility
         run: |
+          # اصلاح خطای ناسازگاری پروگارد در کشِ کتابخانه
           find ~/.pub-cache/hosted/pub.dev/flutter_inappwebview_android-*/android -name build.gradle -exec sed -i 's/proguard-android.txt/proguard-android-optimize.txt/g' {} +
 
       - name: Build Optimized APK
+        # خروجی گرفتن و تقسیم بر اساس پردازنده برای کاهش حجم
         run: flutter build apk --release --split-per-abi
 
       - name: Upload Artifacts
