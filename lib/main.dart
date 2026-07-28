@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:collection';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -65,30 +66,30 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
         }
       }
 
-      // ۲. استخراج توکن‌های حیاتی
-      String? tokenMs;
-      String? refreshToken;
+      // ۲. استخراج هوشمند توکن‌ها (برای جلوگیری از ارور 400 رفرش توکن)
+      String? extractedTokenMs;
+      String? extractedRefreshToken;
 
       List<dynamic> cookies = data['cookies'] ?? [];
       for (var c in cookies) {
-        if (c['name'] == 'tokenMS') tokenMs = c['value'];
-        if (c['name'] == 'refresh_token') refreshToken = c['value'];
+        if (c['name'] == 'tokenMS') extractedTokenMs = c['value'];
+        if (c['name'] == 'refresh_token') extractedRefreshToken = c['value'];
       }
 
-      if (tokenMs == null || refreshToken == null) {
+      if (extractedTokenMs == null || extractedRefreshToken == null) {
         for (var item in localData) {
-          if (item['name'] == 'tokenMS' && tokenMs == null) tokenMs = item['value'];
-          if (item['name'] == 'refresh_token' && refreshToken == null) refreshToken = item['value'];
+          if (item['name'] == 'tokenMS' && extractedTokenMs == null) extractedTokenMs = item['value'];
+          if (item['name'] == 'refresh_token' && extractedRefreshToken == null) extractedRefreshToken = item['value'];
         }
       }
 
-      // ۳. نجات سشن: اجبار دامنه روی .okala.com (حل مشکل ۴۰۱ و لاگ‌اوت شدن)
-      if (tokenMs != null) {
+      // ۳. تزریق کوکی‌ها با فورس دامنه روی .okala.com
+      if (extractedTokenMs != null) {
         await cookieManager.setCookie(
           url: WebUri("https://www.okala.com"),
           name: "tokenMS",
-          value: tokenMs,
-          domain: ".okala.com", // <--- کلید حل مشکل لاگ‌اوت
+          value: extractedTokenMs,
+          domain: ".okala.com",
           path: "/",
           isSecure: true,
           sameSite: HTTPCookieSameSitePolicy.NONE,
@@ -96,19 +97,19 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
         await cookieManager.setCookie(
           url: WebUri("https://www.okala.com"),
           name: "token",
-          value: tokenMs,
-          domain: ".okala.com", // <--- کلید حل مشکل لاگ‌اوت
+          value: extractedTokenMs,
+          domain: ".okala.com",
           path: "/",
           isSecure: true,
           sameSite: HTTPCookieSameSitePolicy.NONE,
         );
       }
       
-      if (refreshToken != null) {
+      if (extractedRefreshToken != null) {
         await cookieManager.setCookie(
           url: WebUri("https://www.okala.com"),
           name: "refresh_token",
-          value: refreshToken,
+          value: extractedRefreshToken,
           domain: ".okala.com",
           path: "/",
           isSecure: true,
@@ -116,14 +117,37 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
         );
       }
 
+      // تنظیم سایر کوکی‌های موجود در جیسون
+      for (var c in cookies) {
+        if (c['name'] != 'tokenMS' && c['name'] != 'refresh_token' && c['name'] != 'token') {
+          String rawDomain = c['domain']?.toString() ?? ".okala.com";
+          String domain = rawDomain.startsWith('.') ? rawDomain : '.$rawDomain';
+
+          await cookieManager.setCookie(
+            url: WebUri("https://www.okala.com"),
+            name: c['name'],
+            value: c['value'],
+            domain: domain,
+            path: c['path'] ?? "/",
+            isSecure: true,
+            sameSite: HTTPCookieSameSitePolicy.NONE,
+          );
+        }
+      }
+
       setState(() => _statusMessage = 'ورود به مرورگر...');
 
       if (!mounted) return;
       
+      // ارسال مقادیر توکن‌ها به اسکرین مرورگر برای تزریق در LocalStorage
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (context) => SecureBrowserScreen(localData: localData),
+          builder: (context) => SecureBrowserScreen(
+            localData: localData,
+            tokenMs: extractedTokenMs,
+            refreshToken: extractedRefreshToken,
+          ),
         ),
       ).then((_) {
         setState(() {
@@ -198,8 +222,15 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
 
 class SecureBrowserScreen extends StatefulWidget {
   final List<dynamic> localData;
+  final String? tokenMs;
+  final String? refreshToken;
 
-  const SecureBrowserScreen({Key? key, required this.localData}) : super(key: key);
+  const SecureBrowserScreen({
+    Key? key, 
+    required this.localData,
+    this.tokenMs,
+    this.refreshToken,
+  }) : super(key: key);
 
   @override
   State<SecureBrowserScreen> createState() => _SecureBrowserScreenState();
@@ -212,45 +243,59 @@ class _SecureBrowserScreenState extends State<SecureBrowserScreen> {
   @override
   Widget build(BuildContext context) {
     final String base64Data = base64Encode(utf8.encode(jsonEncode(widget.localData)));
+    final String uniqueSessionId = DateTime.now().millisecondsSinceEpoch.toString();
 
-    // اسکریپت تزریق (اجرا به روش اکستنشن)
-    final String injectionJs = """
-      (function() {
+    // اسکریپت نجات: تزریق حیاتیِ رفرش‌توکن به حافظه مرورگر برای جلوگیری از ارور 400
+    final injectionScript = UserScript(
+      source: """
         try {
-          var decodedData = decodeURIComponent(escape(window.atob('$base64Data')));
-          var items = JSON.parse(decodedData);
-          
-          localStorage.clear();
-          sessionStorage.clear();
-          
-          items.forEach(item => {
-            var finalValue = item.value;
+          if (sessionStorage.getItem('hyperlink_inj_id') !== '$uniqueSessionId') {
+            var decodedData = decodeURIComponent(escape(window.atob('$base64Data')));
+            var items = JSON.parse(decodedData);
             
-            if (item.name === 'user' || item.name === 'persist:root') {
-               if (finalValue.includes('%7B')) {
-                  var decodedObjStr = decodeURIComponent(finalValue);
-                  if (decodedObjStr.includes('"stateCode": 0')) {
-                      decodedObjStr = decodedObjStr.replace(/"stateCode":\\s*0/g, '"stateCode": 1');
-                      decodedObjStr = decodedObjStr.replace(/"customerIsLoggedInForFirstTime":\\s*true/g, '"customerIsLoggedInForFirstTime": false');
-                      finalValue = encodeURIComponent(decodedObjStr);
-                  }
-               } 
-               else if (finalValue.includes('"stateCode": 0')) {
-                  finalValue = finalValue.replace(/\\\\"stateCode\\\\":\\s*0/g, '\\\\"stateCode\\\\": 1');
-                  finalValue = finalValue.replace(/\\\\"customerIsLoggedInForFirstTime\\\\":\\s*true/g, '\\\\"customerIsLoggedInForFirstTime\\\\": false');
-               }
+            localStorage.clear();
+            
+            items.forEach(item => {
+              var finalValue = item.value;
+              
+              if (item.name === 'user' || item.name === 'persist:root') {
+                 if (finalValue.includes('%7B')) {
+                    var decodedObjStr = decodeURIComponent(finalValue);
+                    if (decodedObjStr.includes('"stateCode": 0')) {
+                        decodedObjStr = decodedObjStr.replace(/"stateCode":\\s*0/g, '"stateCode": 1');
+                        decodedObjStr = decodedObjStr.replace(/"customerIsLoggedInForFirstTime":\\s*true/g, '"customerIsLoggedInForFirstTime": false');
+                        finalValue = encodeURIComponent(decodedObjStr);
+                    }
+                 } 
+                 else if (finalValue.includes('"stateCode": 0')) {
+                    finalValue = finalValue.replace(/\\\\"stateCode\\\\":\\s*0/g, '\\\\"stateCode\\\\": 1');
+                    finalValue = finalValue.replace(/\\\\"customerIsLoggedInForFirstTime\\\\":\\s*true/g, '\\\\"customerIsLoggedInForFirstTime\\\\": false');
+                 }
+              }
+              localStorage.setItem(item.name, finalValue);
+            });
+            
+            // گارد امنیتی: اجبار تزریق توکن‌ها برای تغذیه فرآیند Refresh Token
+            var tMs = '${widget.tokenMs ?? ''}';
+            var rTk = '${widget.refreshToken ?? ''}';
+            
+            if (tMs !== '') {
+                localStorage.setItem('tokenMS', tMs);
+                localStorage.setItem('token', tMs);
+            }
+            if (rTk !== '') {
+                localStorage.setItem('refresh_token', rTk);
             }
             
-            localStorage.setItem(item.name, finalValue);
-          });
-          
-          // بعد از تزریق کامل، سایت را رفرش می‌کنیم
-          window.location.replace('https://www.okala.com/');
+            sessionStorage.setItem('hyperlink_inj_id', '$uniqueSessionId');
+            window.location.replace('https://www.okala.com/');
+          }
         } catch(e) {
           console.error("Storage Injection Error:", e);
         }
-      })();
-    """;
+      """,
+      injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+    );
 
     return Scaffold(
       appBar: AppBar(
@@ -262,19 +307,18 @@ class _SecureBrowserScreenState extends State<SecureBrowserScreen> {
         children: [
           InAppWebView(
             initialUrlRequest: URLRequest(url: WebUri("https://www.okala.com/")),
+            initialUserScripts: UnmodifiableListView<UserScript>([injectionScript]),
             initialSettings: InAppWebViewSettings(
               javaScriptEnabled: true,
               domStorageEnabled: true,
               thirdPartyCookiesEnabled: true,
-              clearCache: true, // سشن‌های قبلی پاک می‌شوند
+              clearCache: true, 
             ),
             onLoadStop: (controller, url) async {
-              // فقط وقتی صفحه برای اولین بار کامل لود شد، اسکریپت را اجرا می‌کنیم (دقیقاً مثل اکستنشن)
               if (!_hasInjectedData) {
                 _hasInjectedData = true; 
-                await controller.evaluateJavascript(source: injectionJs);
+                await controller.evaluateJavascript(source: injectionScript.source);
               } else {
-                // صفحه با دیتای جدید رفرش شده است
                 setState(() {
                   _isInjecting = false;
                 });
