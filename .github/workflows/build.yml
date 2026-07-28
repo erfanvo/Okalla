@@ -1,0 +1,44 @@
+name: Build HyperLink APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Initialize App Structure
+        run: |
+          flutter create --project-name hyperlink --org com.hyperlink.app .
+          # افزودن دسترسی اینترنت به اندروید مانیفست جهت اطمینان
+          sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET"/>' android/app/src/main/AndroidManifest.xml
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Build Optimized APK
+        run: flutter build apk --release --split-per-abi
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: HyperLink-App-Optimized
+          path: build/app/outputs/flutter-apk/*-release.apk
+
