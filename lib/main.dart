@@ -85,10 +85,11 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
 
       if (!mounted) return;
       
+      // در اینجا علاوه بر استوریج، کوکی‌ها را هم به صفحه بعد می‌فرستیم
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (context) => SecureBrowserScreen(localData: localData),
+          builder: (context) => SecureBrowserScreen(localData: localData, cookies: cookies),
         ),
       ).then((_) {
         setState(() {
@@ -195,25 +196,35 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
 
 class SecureBrowserScreen extends StatelessWidget {
   final List<dynamic> localData;
+  final List<dynamic> cookies;
 
-  const SecureBrowserScreen({Key? key, required this.localData}) : super(key: key);
+  const SecureBrowserScreen({Key? key, required this.localData, required this.cookies}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
-    final String serializedData = jsonEncode(localData);
+    // ۱. رمزنگاری کامل داده‌ها به Base64 برای جلوگیری از خطای نگارشی در جاوااسکریپت (حفظ نام‌های فارسی و JSON)
+    final String base64Data = base64Encode(utf8.encode(jsonEncode(localData)));
 
-    // اسکریپت جادویی که قبل از تولد صفحه تزریق شده و مانع خروج (Log out) می‌شود
+    // ۲. تزریق امن داده‌ها قبل از تولد صفحه
     final injectionScript = UserScript(
       source: """
-        var items = $serializedData;
-        window.localStorage.clear();
-        window.sessionStorage.clear();
-        for (var i = 0; i < items.length; i++) {
-          window.localStorage.setItem(items[i].name, items[i].value);
+        try {
+          var decodedData = decodeURIComponent(escape(window.atob('$base64Data')));
+          var items = JSON.parse(decodedData);
+          window.localStorage.clear();
+          window.sessionStorage.clear();
+          for (var i = 0; i < items.length; i++) {
+            window.localStorage.setItem(items[i].name, items[i].value);
+          }
+        } catch(e) {
+          console.error("Storage Injection Error:", e);
         }
       """,
       injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
     );
+
+    // ۳. کلید طلایی: ساخت هدر کوکی برای ارسال در درخواست اول (رفع مشکل نیامدن نام کاربری و فریز شدن سایت)
+    final String cookieHeader = cookies.map((c) => "\${c['name']}=\${c['value']}").join("; ");
 
     return Scaffold(
       appBar: AppBar(
@@ -224,13 +235,19 @@ class SecureBrowserScreen extends StatelessWidget {
         elevation: 0,
       ),
       body: InAppWebView(
-        initialUrlRequest: URLRequest(url: WebUri("https://www.okala.com/profile")),
+        initialUrlRequest: URLRequest(
+          url: WebUri("https://www.okala.com/profile"),
+          headers: {
+            "Cookie": cookieHeader // این خط سرور اکالا را مجبور می‌کند شما را لاگین شده ببیند
+          }
+        ),
         initialUserScripts: UnmodifiableListView<UserScript>([injectionScript]),
         initialSettings: InAppWebViewSettings(
           javaScriptEnabled: true,
           domStorageEnabled: true,
           clearCache: false,
           thirdPartyCookiesEnabled: true,
+          mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
         ),
       ),
     );
