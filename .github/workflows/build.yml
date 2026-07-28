@@ -27,14 +27,18 @@ jobs:
       - name: Initialize App Structure
         run: |
           flutter create --project-name hyperlink --org com.hyperlink.app .
-          # Granting internet access to AndroidManifest
-          sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET"/>' android/app/src/main/AndroidManifest.xml
+          
+          # ANTI-CRASH 1: Force Android SDK Version to match InAppWebView requirements
+          sed -i 's/flutter.minSdkVersion/24/g' android/app/build.gradle
+          sed -i 's/minSdkVersion 16/minSdkVersion 24/g' android/app/build.gradle
+          sed -i 's/minSdkVersion 19/minSdkVersion 24/g' android/app/build.gradle
+          sed -i 's/minSdkVersion 21/minSdkVersion 24/g' android/app/build.gradle
 
       - name: Install Dependencies
         run: flutter pub get
 
       - name: Patch InAppWebView Gradle Compatibility
-        # این دستور فایل‌های کَش شده کتابخانه را پیدا کرده و خطای ProGuard را اصلاح می‌کند
+        # ANTI-CRASH 2: Fix the exact ProGuard optimization error you encountered
         run: |
           find ~/.pub-cache/hosted/pub.dev/flutter_inappwebview_android-*/android -name build.gradle -exec sed -i 's/proguard-android.txt/proguard-android-optimize.txt/g' {} +
 
