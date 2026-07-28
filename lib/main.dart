@@ -45,7 +45,7 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
       
       final Map<String, dynamic> data = json.decode(response.body);
 
-      setState(() => _statusMessage = 'در حال تنظیم کوکی‌ها و حافظه...');
+      setState(() => _statusMessage = 'در حال همگام‌سازی ساختار کوکی‌ها و حافظه...');
 
       final CookieManager cookieManager = CookieManager.instance();
       await cookieManager.deleteAllCookies();
@@ -60,19 +60,27 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
         final tokenMsObj = localData.firstWhere((e) => e['name'] == 'tokenMS', orElse: () => null);
         final refreshObj = localData.firstWhere((e) => e['name'] == 'refresh_token', orElse: () => null);
         
-        if (tokenMsObj != null) cookies.add({'name': 'tokenMS', 'value': tokenMsObj['value']});
-        if (refreshObj != null) cookies.add({'name': 'refresh_token', 'value': refreshObj['value']});
+        if (tokenMsObj != null) cookies.add({'name': 'tokenMS', 'value': tokenMsObj['value'], 'domain': '.okala.com', 'path': '/', 'secure': true});
+        if (refreshObj != null) cookies.add({'name': 'refresh_token', 'value': refreshObj['value'], 'domain': '.okala.com', 'path': '/', 'secure': true});
       }
 
-      // تنظیم دقیق کوکی‌ها برای دامنه‌ی اکالا
+      // کلید حل مشکل: استفاده از دامنه و پارامترهای واقعیِ خودِ کوکی در جیسون
       for (var c in cookies) {
+        String domain = c['domain'] ?? ".okala.com";
+        String targetUrl = "https://www.okala.com";
+        if (domain.startsWith('.')) {
+          targetUrl = "https://${domain.substring(1)}";
+        } else {
+          targetUrl = "https://$domain";
+        }
+
         await cookieManager.setCookie(
-          url: WebUri("https://www.okala.com"),
+          url: WebUri(targetUrl),
           name: c['name'],
           value: c['value'],
-          domain: ".okala.com",
-          path: "/",
-          isSecure: true,
+          domain: domain,
+          path: c['path'] ?? "/",
+          isSecure: c['secure'] ?? false,
         );
       }
 
@@ -120,12 +128,12 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
               children: [
                 const Icon(Icons.security_rounded, color: Colors.indigo, size: 48),
                 const SizedBox(height: 16),
-                const Text('تزریق‌گر امن اکالا', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                const Text('HyperLink Workspace', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 24),
                 TextField(
                   controller: _linkController,
                   decoration: InputDecoration(
-                    hintText: 'لینک ربات را اینجا وارد کنید...',
+                    hintText: 'Enter Endpoint URL...',
                     filled: true,
                     fillColor: Colors.grey.shade50,
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
@@ -140,7 +148,7 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
                     onPressed: _isProcessing ? null : _initializeConnection,
                     child: _isProcessing
                         ? const CircularProgressIndicator(color: Colors.white)
-                        : const Text('ورود به اکانت', style: TextStyle(color: Colors.white, fontSize: 16)),
+                        : const Text('Initialize Connection', style: TextStyle(color: Colors.white, fontSize: 16)),
                   ),
                 ),
                 if (_statusMessage.isNotEmpty) ...[
@@ -164,7 +172,6 @@ class SecureBrowserScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // کدگذاری امن داده‌ها برای جلوگیری از تداخل کاراکترها
     final String base64Data = base64Encode(utf8.encode(jsonEncode(localData)));
 
     final injectionScript = UserScript(
@@ -184,12 +191,11 @@ class SecureBrowserScreen extends StatelessWidget {
       injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
     );
 
-    // ساخت هدر کوکی جهت ارسال همزمان با درخواست اولیه صفحه
     final String cookieHeader = cookies.map((c) => "${c['name']}=${c['value']}").join("; ");
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('مرورگر امن اکالا', style: TextStyle(color: Colors.white)),
+        title: const Text('HyperLink Secure Browser', style: TextStyle(color: Colors.white)),
         backgroundColor: Colors.indigo,
         iconTheme: const IconThemeData(color: Colors.white),
       ),
@@ -209,4 +215,3 @@ class SecureBrowserScreen extends StatelessWidget {
     );
   }
 }
-
