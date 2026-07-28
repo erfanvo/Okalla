@@ -45,14 +45,14 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
       
       final Map<String, dynamic> data = json.decode(response.body);
 
-      setState(() => _statusMessage = 'در حال پاکسازی و پیکربندی امن...');
+      setState(() => _statusMessage = 'در حال همگام‌سازی کوکی‌ها...');
 
       final CookieManager cookieManager = CookieManager.instance();
       await cookieManager.deleteAllCookies();
 
+      // استخراج دقیق LocalStorage بر اساس ساختار استاندارد اکالا
       List<dynamic> localData = [];
       if (data['origins'] != null && (data['origins'] as List).isNotEmpty) {
-        // اصلاح قطعی خطای نوع داده با صراحت دادن به لیست و شرط بولی
         var originsList = data['origins'] as List;
         var matchedOrigin = originsList.firstWhere(
           (o) => o['origin'] != null && o['origin'].toString().contains('okala.com'),
@@ -61,6 +61,7 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
         localData = matchedOrigin['localStorage'] ?? [];
       }
 
+      // تنظیم کوکی‌ها با استاندارد HTTPCookieSameSitePolicy.NONE و Secure
       List<dynamic> cookies = data['cookies'] ?? [];
       for (var c in cookies) {
         String domain = c['domain'] ?? ".okala.com";
@@ -75,7 +76,7 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
         );
       }
 
-      setState(() => _statusMessage = 'آماده‌سازی مرورگر...');
+      setState(() => _statusMessage = 'آماده‌سازی مرورگر امن...');
 
       if (!mounted) return;
       
@@ -162,6 +163,7 @@ class SecureBrowserScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // کدگذاری Base64 برای انتقال بی‌نقص کاراکترهای فارسی و توکن‌ها بدون خطا
     final String base64Data = base64Encode(utf8.encode(jsonEncode(localData)));
 
     final injectionScript = UserScript(
@@ -197,6 +199,7 @@ class SecureBrowserScreen extends StatelessWidget {
           clearCache: false,
         ),
         onLoadStop: (controller, url) async {
+          // هدایت خودکار به صفحه پروفایل پس از تکمیل بوت‌استرپِ ریشه
           if (url.toString() == "https://www.okala.com/" || url.toString() == "https://www.okala.com") {
             await controller.loadUrl(urlRequest: URLRequest(url: WebUri("https://www.okala.com/profile")));
           }
