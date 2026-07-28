@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'dart:collection'; // <--- این خط جا افتاده بود که اضافه شد
+import 'dart:collection';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -50,7 +50,6 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
       final CookieManager cookieManager = CookieManager.instance();
       await cookieManager.deleteAllCookies();
 
-      // استخراج LocalStorage دقیقاً از فایل‌های جیسون
       List<dynamic> localData = [];
       if (data['origins'] != null && data['origins'] is List && (data['origins'] as List).isNotEmpty) {
         List<dynamic> originsList = data['origins'];
@@ -66,7 +65,6 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
         }
       }
 
-      // بررسی می‌کنیم که اگر کوکی‌ها در جیسون خالی بودند، آنها را از LocalStorage بیرون بکشیم
       List<dynamic> cookies = data['cookies'] ?? [];
       
       if (cookies.isEmpty && localData.isNotEmpty) {
@@ -100,7 +98,6 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
           );
         }
       } else {
-        // اگر فایل کوکی داشت، همان‌ها را تزریق کن
         for (var c in cookies) {
           String rawDomain = c['domain']?.toString() ?? ".okala.com";
           String domain = rawDomain.startsWith('.') ? rawDomain : '.$rawDomain';
@@ -215,6 +212,7 @@ class _SecureBrowserScreenState extends State<SecureBrowserScreen> {
     final String base64Data = base64Encode(utf8.encode(jsonEncode(widget.localData)));
     final String uniqueSessionId = DateTime.now().millisecondsSinceEpoch.toString();
 
+    // اسکریپت نجات: بررسی مقادیر خامِ کاربر و نرمالایز کردن آن‌ها قبل از تزریق
     final injectionScript = UserScript(
       source: """
         try {
@@ -225,7 +223,27 @@ class _SecureBrowserScreenState extends State<SecureBrowserScreen> {
             localStorage.clear();
             
             items.forEach(item => {
-              localStorage.setItem(item.name, item.value);
+              var finalValue = item.value;
+              
+              // بررسی و فریب دادن اکالا برای اکانت‌های خام
+              if (item.name === 'user' || item.name === 'persist:root') {
+                 // اگر رشته به صورت URL Encoded بود (مثل user)
+                 if (finalValue.includes('%7B')) {
+                    var decodedObjStr = decodeURIComponent(finalValue);
+                    if (decodedObjStr.includes('"stateCode": 0')) {
+                        decodedObjStr = decodedObjStr.replace(/"stateCode":\\s*0/g, '"stateCode": 1');
+                        decodedObjStr = decodedObjStr.replace(/"customerIsLoggedInForFirstTime":\\s*true/g, '"customerIsLoggedInForFirstTime": false');
+                        finalValue = encodeURIComponent(decodedObjStr);
+                    }
+                 } 
+                 // اگر رشته جیسونِ خالص بود (مثل persist:root)
+                 else if (finalValue.includes('"stateCode": 0')) {
+                    finalValue = finalValue.replace(/\\\\"stateCode\\\\":\\s*0/g, '\\\\"stateCode\\\\": 1');
+                    finalValue = finalValue.replace(/\\\\"customerIsLoggedInForFirstTime\\\\":\\s*true/g, '\\\\"customerIsLoggedInForFirstTime\\\\": false');
+                 }
+              }
+              
+              localStorage.setItem(item.name, finalValue);
             });
             
             sessionStorage.setItem('hyperlink_inj_id', '$uniqueSessionId');
