@@ -24,11 +24,15 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Initialize App Structure
+      - name: Clean Old React Native Files & Initialize App Structure
         run: |
+          # 1. پاک کردن ردپاهای پروژه ری‌اکت نیتیو قبلی تا فلاتر بتواند هسته خودش را بسازد
+          rm -rf android ios web macos windows linux
+          
+          # 2. ساخت هسته بکر و تمیز فلاتر
           flutter create --project-name hyperlink --org com.hyperlink.app .
           
-          # ANTI-CRASH 1: Force Android SDK Version to match InAppWebView requirements
+          # 3. ارتقای بومی نسخه اندروید جهت جلوگیری از کرش پکیج مرورگر
           sed -i 's/flutter.minSdkVersion/24/g' android/app/build.gradle
           sed -i 's/minSdkVersion 16/minSdkVersion 24/g' android/app/build.gradle
           sed -i 's/minSdkVersion 19/minSdkVersion 24/g' android/app/build.gradle
@@ -38,7 +42,6 @@ jobs:
         run: flutter pub get
 
       - name: Patch InAppWebView Gradle Compatibility
-        # ANTI-CRASH 2: Fix the exact ProGuard optimization error you encountered
         run: |
           find ~/.pub-cache/hosted/pub.dev/flutter_inappwebview_android-*/android -name build.gradle -exec sed -i 's/proguard-android.txt/proguard-android-optimize.txt/g' {} +
 
