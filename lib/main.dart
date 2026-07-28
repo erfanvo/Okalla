@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'dart:collection';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -50,18 +49,26 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
       final CookieManager cookieManager = CookieManager.instance();
       await cookieManager.deleteAllCookies();
 
-      // استخراج دقیق LocalStorage بر اساس ساختار استاندارد اکالا
+      // استخراج قطعی و بدون خطای تایپ (Type Error) برای LocalStorage
       List<dynamic> localData = [];
-      if (data['origins'] != null && (data['origins'] as List).isNotEmpty) {
-        var originsList = data['origins'] as List;
-        var matchedOrigin = originsList.firstWhere(
-          (o) => o['origin'] != null && o['origin'].toString().contains('okala.com'),
-          orElse: () => originsList[0],
-        );
-        localData = matchedOrigin['localStorage'] ?? [];
+      if (data['origins'] != null && data['origins'] is List && (data['origins'] as List).isNotEmpty) {
+        List<dynamic> originsList = data['origins'];
+        dynamic matchedOrigin = originsList[0]; // پیش‌فرض
+        
+        // پیدا کردن ایمنِ اریجین اکالا
+        for (var o in originsList) {
+          if (o is Map && o['origin'] != null && o['origin'].toString().contains('okala.com')) {
+            matchedOrigin = o;
+            break;
+          }
+        }
+        
+        if (matchedOrigin is Map && matchedOrigin['localStorage'] != null) {
+          localData = matchedOrigin['localStorage'];
+        }
       }
 
-      // تنظیم کوکی‌ها با استاندارد HTTPCookieSameSitePolicy.NONE و Secure
+      // تزریق دقیق کوکی‌ها با پارامترهای ایمنِ مرورگر
       List<dynamic> cookies = data['cookies'] ?? [];
       for (var c in cookies) {
         String domain = c['domain'] ?? ".okala.com";
@@ -139,7 +146,7 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
                     style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
                     onPressed: _isProcessing ? null : _initializeConnection,
                     child: _isProcessing
-                        ? const CircularProgressIndicator(color: Colors.white)
+                        ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
                         : const Text('Initialize Connection', style: TextStyle(color: Colors.white, fontSize: 16)),
                   ),
                 ),
@@ -156,55 +163,91 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
   }
 }
 
-class SecureBrowserScreen extends StatelessWidget {
+class SecureBrowserScreen extends StatefulWidget {
   final List<dynamic> localData;
 
   const SecureBrowserScreen({Key? key, required this.localData}) : super(key: key);
 
   @override
-  Widget build(BuildContext context) {
-    // کدگذاری Base64 برای انتقال بی‌نقص کاراکترهای فارسی و توکن‌ها بدون خطا
-    final String base64Data = base64Encode(utf8.encode(jsonEncode(localData)));
+  State<SecureBrowserScreen> createState() => _SecureBrowserScreenState();
+}
 
-    final injectionScript = UserScript(
-      source: """
-        try {
-          var decodedData = decodeURIComponent(escape(window.atob('$base64Data')));
-          var items = JSON.parse(decodedData);
-          localStorage.clear();
-          sessionStorage.clear();
-          items.forEach(item => {
-            localStorage.setItem(item.name, item.value);
-          });
-        } catch(e) {
-          console.error("Storage Injection Error:", e);
-        }
-      """,
-      injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
-    );
+class _SecureBrowserScreenState extends State<SecureBrowserScreen> {
+  bool _isInjecting = true;
+  bool _hasInjectedData = false;
+
+  @override
+  Widget build(BuildContext context) {
+    // کدگذاری داده‌ها برای جلوگیری از تداخل رشته‌های جاوااسکریپت
+    final String base64Data = base64Encode(utf8.encode(jsonEncode(widget.localData)));
+
+    // رفرش کردن همان صفحه اصلی به جای رفتن به پروفایل (دقیقاً مشابه اکستنشن کروم)
+    final String injectionJs = """
+      try {
+        var decodedData = decodeURIComponent(escape(window.atob('$base64Data')));
+        var items = JSON.parse(decodedData);
+        localStorage.clear();
+        sessionStorage.clear();
+        items.forEach(item => {
+          localStorage.setItem(item.name, item.value);
+        });
+        
+        // رفرش صفحه برای هیدراته شدن سایت اکالا بدون فریز
+        window.location.replace('https://www.okala.com/');
+      } catch(e) {
+        console.error("Storage Error:", e);
+      }
+    """;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('HyperLink Secure Browser', style: TextStyle(color: Colors.white)),
+        title: const Text('HyperLink Secure Browser', style: TextStyle(color: Colors.white, fontSize: 16)),
         backgroundColor: Colors.indigo,
         iconTheme: const IconThemeData(color: Colors.white),
       ),
-      body: InAppWebView(
-        initialUrlRequest: URLRequest(url: WebUri("https://www.okala.com/")),
-        initialUserScripts: UnmodifiableListView<UserScript>([injectionScript]),
-        initialSettings: InAppWebViewSettings(
-          javaScriptEnabled: true,
-          domStorageEnabled: true,
-          thirdPartyCookiesEnabled: true,
-          clearCache: false,
-        ),
-        onLoadStop: (controller, url) async {
-          // هدایت خودکار به صفحه پروفایل پس از تکمیل بوت‌استرپِ ریشه
-          if (url.toString() == "https://www.okala.com/" || url.toString() == "https://www.okala.com") {
-            await controller.loadUrl(urlRequest: URLRequest(url: WebUri("https://www.okala.com/profile")));
-          }
-        },
+      body: Stack(
+        children: [
+          InAppWebView(
+            initialUrlRequest: URLRequest(url: WebUri("https://www.okala.com/")),
+            initialSettings: InAppWebViewSettings(
+              javaScriptEnabled: true,
+              domStorageEnabled: true,
+              thirdPartyCookiesEnabled: true,
+              clearCache: false,
+            ),
+            onLoadStop: (controller, url) async {
+              // مرحله اول: سایت لود شده، زمان تزریق دیتا و رفرش است
+              if (!_hasInjectedData) {
+                _hasInjectedData = true; 
+                await controller.evaluateJavascript(source: injectionJs);
+              } 
+              // مرحله دوم: سایت با دیتای جدید روی ریشه رفرش شده، پس پرده لودینگ برداشته شود
+              else {
+                setState(() {
+                  _isInjecting = false;
+                });
+              }
+            },
+          ),
+          
+          // نمایش لودینگ تا پایان عملیات رفرشِ پشت صحنه
+          if (_isInjecting)
+            Container(
+              color: Colors.white,
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: const [
+                    CircularProgressIndicator(color: Colors.indigo),
+                    SizedBox(height: 16),
+                    Text('در حال انتقال امن...', style: TextStyle(color: Colors.indigo, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
 }
+
