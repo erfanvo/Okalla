@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:collection'; // <--- این خط جا افتاده بود که اضافه شد
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -49,7 +50,7 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
       final CookieManager cookieManager = CookieManager.instance();
       await cookieManager.deleteAllCookies();
 
-      // استخراج LocalStorage دقیقاً از فایل‌های جیسون شما
+      // استخراج LocalStorage دقیقاً از فایل‌های جیسون
       List<dynamic> localData = [];
       if (data['origins'] != null && data['origins'] is List && (data['origins'] as List).isNotEmpty) {
         List<dynamic> originsList = data['origins'];
@@ -65,7 +66,6 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
         }
       }
 
-      // ===> بخش نجاتِ ۱۰۰ لینک شما <===
       // بررسی می‌کنیم که اگر کوکی‌ها در جیسون خالی بودند، آنها را از LocalStorage بیرون بکشیم
       List<dynamic> cookies = data['cookies'] ?? [];
       
@@ -78,7 +78,6 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
           }
         }
         
-        // اگر tokenMS را پیدا کردیم، کوکی آن را می‌سازیم
         if (extractedTokenMs != null) {
           await cookieManager.setCookie(
             url: WebUri("https://www.okala.com"),
@@ -90,7 +89,6 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
             sameSite: HTTPCookieSameSitePolicy.NONE,
           );
           
-          // همچنین کوکی 'token' را که در سایت اکالا استفاده می‌شود، اضافه می‌کنیم
           await cookieManager.setCookie(
             url: WebUri("https://www.okala.com"),
             name: "token",
@@ -217,7 +215,6 @@ class _SecureBrowserScreenState extends State<SecureBrowserScreen> {
     final String base64Data = base64Encode(utf8.encode(jsonEncode(widget.localData)));
     final String uniqueSessionId = DateTime.now().millisecondsSinceEpoch.toString();
 
-    // اسکریپت با قفل سشن (Session Guard)
     final injectionScript = UserScript(
       source: """
         try {
@@ -289,3 +286,4 @@ class _SecureBrowserScreenState extends State<SecureBrowserScreen> {
     );
   }
 }
+
