@@ -27,11 +27,16 @@ jobs:
       - name: Initialize App Structure
         run: |
           flutter create --project-name hyperlink --org com.hyperlink.app .
-          # افزودن دسترسی اینترنت به اندروید مانیفست جهت اطمینان
+          # Granting internet access to AndroidManifest
           sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET"/>' android/app/src/main/AndroidManifest.xml
 
       - name: Install Dependencies
         run: flutter pub get
+
+      - name: Patch InAppWebView Gradle Compatibility
+        # این دستور فایل‌های کَش شده کتابخانه را پیدا کرده و خطای ProGuard را اصلاح می‌کند
+        run: |
+          find ~/.pub-cache/hosted/pub.dev/flutter_inappwebview_android-*/android -name build.gradle -exec sed -i 's/proguard-android.txt/proguard-android-optimize.txt/g' {} +
 
       - name: Build Optimized APK
         run: flutter build apk --release --split-per-abi
@@ -41,4 +46,3 @@ jobs:
         with:
           name: HyperLink-App-Optimized
           path: build/app/outputs/flutter-apk/*-release.apk
-
