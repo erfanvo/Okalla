@@ -51,10 +51,12 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
       await cookieManager.deleteAllCookies();
 
       List<dynamic> localData = [];
-      if (data['origins'] != null) {
-        final matchedOrigin = data['origins'].firstWhere(
-          (o) => o['origin']?.contains('okala.com') ?? false,
-          orElse: () => data['origins'][0],
+      if (data['origins'] != null && (data['origins'] as List).isNotEmpty) {
+        // اصلاح قطعی خطای نوع داده با صراحت دادن به لیست و شرط بولی
+        var originsList = data['origins'] as List;
+        var matchedOrigin = originsList.firstWhere(
+          (o) => o['origin'] != null && o['origin'].toString().contains('okala.com'),
+          orElse: () => originsList[0],
         );
         localData = matchedOrigin['localStorage'] ?? [];
       }
@@ -69,7 +71,7 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
           domain: domain,
           path: c['path'] ?? "/",
           isSecure: c['secure'] ?? true,
-          sameSite: HTTPCookieSameSitePolicy.NONE, // اصلاح نام کلاس به شکل صحیح
+          sameSite: HTTPCookieSameSitePolicy.NONE,
         );
       }
 
