@@ -1,4 +1,4 @@
-Name: Build HyperLink APK
+name: Build HyperLink APK
 
 on:
   push:
