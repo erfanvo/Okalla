@@ -29,7 +29,7 @@ dev_dependencies:
 # تنظیمات ساخت آیکون (برای گیت‌هاب اکشنز و بیلد محلی)
 flutter_launcher_icons:
   android: "launcher_icon"
-  ios: true
+  ios: false
   image_path: "assets/9w.jpg"
   min_sdk_size: 21
 
