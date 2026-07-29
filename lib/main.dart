@@ -44,7 +44,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
-    // استخراج هوشمند تمام لینک‌ها با استفاده از Regex
     final RegExp linkRegex = RegExp(r'(https?:\/\/[^\s]+)');
     final Iterable<Match> matches = linkRegex.allMatches(text);
     
@@ -55,7 +54,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
-    // انتقال به صفحه مرورگر به همراه لیست لینک‌ها
     setState(() => _statusMessage = '');
     Navigator.push(
       context,
@@ -73,7 +71,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [Color(0xFF4A00E0), Color(0xFF8E2DE2)], // گرادیان بنفش مدرن
+            colors: [Color(0xFF4A00E0), Color(0xFF8E2DE2)], 
           ),
         ),
         child: Center(
@@ -89,7 +87,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // لوگوی مدرن داخل برنامه
                   Container(
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
@@ -108,7 +105,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     maxLines: 6,
                     textDirection: TextDirection.ltr,
                     decoration: InputDecoration(
-                      hintText: 'لینک‌ها را اینجا پیست کنید...\n(پشتیبانی از چندین لینک و متن‌های درهم)',
+                      hintText: 'میتوانید یک یا چند لینک را اینجا جایگذاری کنید...\n()',
                       filled: true,
                       fillColor: Colors.grey.shade100,
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
@@ -128,7 +125,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       ),
                       onPressed: _processLinks,
                       icon: const Icon(Icons.flash_on_rounded, color: Colors.white),
-                      label: const Text('شروع کار گروهی', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                      label: const Text('ورود به اکانت', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
                     ),
                   ),
                   if (_statusMessage.isNotEmpty) ...[
@@ -163,7 +160,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
   String? _currentTokenMs;
   String? _currentRefreshToken;
   
-  // برای مجبور کردن WebView به بازسازی کامل (ایزوله سازی سشن‌ها)
   Key _webViewKey = UniqueKey(); 
 
   @override
@@ -181,7 +177,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
     try {
       final CookieManager cookieManager = CookieManager.instance();
-      // پودر کردن کوکی‌های اکانت قبلی!
       await cookieManager.deleteAllCookies();
 
       final response = await http.get(Uri.parse(widget.urls[index]));
@@ -191,7 +186,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
       final Map<String, dynamic> data = json.decode(response.body);
 
-      // استخراج LocalStorage
       List<dynamic> localData = [];
       if (data['origins'] != null && data['origins'] is List && (data['origins'] as List).isNotEmpty) {
         List<dynamic> originsList = data['origins'];
@@ -207,7 +201,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
         }
       }
 
-      // استخراج هوشمند توکن‌ها
       String? tMs;
       String? rTk;
 
@@ -224,7 +217,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
         }
       }
 
-      // فورس دامنه برای کوکی‌ها
       if (tMs != null) {
         await cookieManager.setCookie(url: WebUri("https://www.okala.com"), name: "tokenMS", value: tMs, domain: ".okala.com", path: "/", isSecure: true, sameSite: HTTPCookieSameSitePolicy.NONE);
         await cookieManager.setCookie(url: WebUri("https://www.okala.com"), name: "token", value: tMs, domain: ".okala.com", path: "/", isSecure: true, sameSite: HTTPCookieSameSitePolicy.NONE);
@@ -241,12 +233,11 @@ class _BrowserScreenState extends State<BrowserScreen> {
         }
       }
 
-      // بروزرسانی استیت برای بارگذاری مرورگر
       setState(() {
         _currentLocalData = localData;
         _currentTokenMs = tMs;
         _currentRefreshToken = rTk;
-        _webViewKey = UniqueKey(); // کلید جدید باعث می‌شود وب‌ویو از نو ساخته شود
+        _webViewKey = UniqueKey(); 
         _isLoading = false;
       });
 
@@ -275,7 +266,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
         backgroundColor: Colors.deepPurple,
         iconTheme: const IconThemeData(color: Colors.white),
         actions: [
-          // دکمه پرش سریع به اکانت بعدی
           if (_currentIndex < widget.urls.length - 1)
             TextButton.icon(
               onPressed: _nextAccount,
@@ -314,7 +304,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
                     selected: isActive,
                     selectedTileColor: Colors.deepPurple.shade50,
                     onTap: () {
-                      Navigator.pop(context); // بستن منو
+                      Navigator.pop(context); 
                       if (!isActive) _loadAccount(index);
                     },
                   );
@@ -328,51 +318,53 @@ class _BrowserScreenState extends State<BrowserScreen> {
         children: [
           if (!_isLoading)
             InAppWebView(
-              key: _webViewKey, // ساخت کاملاً تمیز مرورگر در هر بار سوییچ
+              key: _webViewKey, 
               initialUrlRequest: URLRequest(url: WebUri("https://www.okala.com/")),
               initialSettings: InAppWebViewSettings(
                 javaScriptEnabled: true,
                 domStorageEnabled: true,
                 thirdPartyCookiesEnabled: true,
-                clearCache: true, // پاکسازی کش به صورت سخت‌افزاری
+                clearCache: true,
+                clearSessionCache: true, // این اضافه شد تا سشن قبلی کامل پاک بشه
               ),
               onLoadStop: (controller, url) async {
-                // تزریق اسکریپت امنیتی دقیقاً پس از لود صفحه
                 final String base64Data = base64Encode(utf8.encode(jsonEncode(_currentLocalData)));
                 final String injectionJs = """
                   try {
-                    var decodedData = decodeURIComponent(escape(window.atob('$base64Data')));
-                    var items = JSON.parse(decodedData);
-                    
-                    localStorage.clear();
-                    sessionStorage.clear();
-                    
-                    items.forEach(item => {
-                      var finalValue = item.value;
-                      if (item.name === 'user' || item.name === 'persist:root') {
-                         if (finalValue.includes('%7B')) {
-                            var decodedObjStr = decodeURIComponent(finalValue);
-                            if (decodedObjStr.includes('"stateCode": 0')) {
-                                decodedObjStr = decodedObjStr.replace(/"stateCode":\\s*0/g, '"stateCode": 1');
-                                decodedObjStr = decodedObjStr.replace(/"customerIsLoggedInForFirstTime":\\s*true/g, '"customerIsLoggedInForFirstTime": false');
-                                finalValue = encodeURIComponent(decodedObjStr);
-                            }
-                         } 
-                         else if (finalValue.includes('"stateCode": 0')) {
-                            finalValue = finalValue.replace(/\\\\"stateCode\\\\":\\s*0/g, '\\\\"stateCode\\\\": 1');
-                            finalValue = finalValue.replace(/\\\\"customerIsLoggedInForFirstTime\\\\":\\s*true/g, '\\\\"customerIsLoggedInForFirstTime\\\\": false');
-                         }
-                      }
-                      localStorage.setItem(item.name, finalValue);
-                    });
-                    
-                    var tMs = '${_currentTokenMs ?? ''}';
-                    var rTk = '${_currentRefreshToken ?? ''}';
-                    if (tMs !== '') { localStorage.setItem('tokenMS', tMs); localStorage.setItem('token', tMs); }
-                    if (rTk !== '') { localStorage.setItem('refresh_token', rTk); }
-                    
-                    // فقط یک بار رفرش می‌کند تا در لوپ نیفتد
+                    // شرط اومد بیرون تا لوپ بی‌نهایت نگیره
                     if (!sessionStorage.getItem('injected_once')) {
+                        
+                        var decodedData = decodeURIComponent(escape(window.atob('$base64Data')));
+                        var items = JSON.parse(decodedData);
+                        
+                        localStorage.clear();
+                        sessionStorage.clear();
+                        
+                        items.forEach(item => {
+                          var finalValue = item.value;
+                          if (item.name === 'user' || item.name === 'persist:root') {
+                             if (finalValue.includes('%7B')) {
+                                var decodedObjStr = decodeURIComponent(finalValue);
+                                if (decodedObjStr.includes('"stateCode": 0')) {
+                                    decodedObjStr = decodedObjStr.replace(/"stateCode":\\s*0/g, '"stateCode": 1');
+                                    decodedObjStr = decodedObjStr.replace(/"customerIsLoggedInForFirstTime":\\s*true/g, '"customerIsLoggedInForFirstTime": false');
+                                    finalValue = encodeURIComponent(decodedObjStr);
+                                }
+                             } 
+                             else if (finalValue.includes('"stateCode": 0')) {
+                                finalValue = finalValue.replace(/\\\\"stateCode\\\\":\\s*0/g, '\\\\"stateCode\\\\": 1');
+                                finalValue = finalValue.replace(/\\\\"customerIsLoggedInForFirstTime\\\\":\\s*true/g, '\\\\"customerIsLoggedInForFirstTime\\\\": false');
+                             }
+                          }
+                          localStorage.setItem(item.name, finalValue);
+                        });
+                        
+                        var tMs = '${_currentTokenMs ?? ''}';
+                        var rTk = '${_currentRefreshToken ?? ''}';
+                        if (tMs !== '') { localStorage.setItem('tokenMS', tMs); localStorage.setItem('token', tMs); }
+                        if (rTk !== '') { localStorage.setItem('refresh_token', rTk); }
+                        
+                        // اینجا فلگ رو ست میکنیم و بعدش رفرش میشه
                         sessionStorage.setItem('injected_once', 'true');
                         window.location.replace('https://www.okala.com/');
                     }
