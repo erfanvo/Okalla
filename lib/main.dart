@@ -87,15 +87,29 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  // اضافه شدن لوگوی جدید با استایل مدرن
                   Container(
-                    padding: const EdgeInsets.all(16),
+                    width: 88,
+                    height: 88,
                     decoration: BoxDecoration(
-                      color: Colors.deepPurple.shade50,
-                      shape: BoxShape.circle,
+                      borderRadius: BorderRadius.circular(22.0),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Colors.black26,
+                          blurRadius: 15,
+                          offset: Offset(0, 8),
+                        ),
+                      ],
                     ),
-                    child: const Icon(Icons.rocket_launch_rounded, color: Colors.deepPurple, size: 56),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(22.0),
+                      child: Image.asset(
+                        'assets/9w.jpg',
+                        fit: BoxFit.cover,
+                      ),
+                    ),
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 20),
                   const Text('HyperLink Pro', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black87)),
                   const Text('مدیریت همزمان اکانت‌ها', style: TextStyle(fontSize: 14, color: Colors.grey)), 
                   const SizedBox(height: 32),
@@ -158,7 +172,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
   bool _isLoading = true;
   String _loadingMessage = 'در حال آماده‌سازی...';
   
-  // این متغیر جدید جلوی تمام مشکلات پرداخت و لوپ شدن رو میگیره
   bool _hasInjectedForCurrentAccount = false; 
   
   List<dynamic> _currentLocalData = [];
@@ -176,7 +189,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
   Future<void> _loadAccount(int index) async {
     setState(() {
       _isLoading = true;
-      _hasInjectedForCurrentAccount = false; // برای هر اکانت جدید، این متغیر رو صفر می‌کنیم
+      _hasInjectedForCurrentAccount = false;
       _loadingMessage = 'در حال دریافت اطلاعات اکانت ${index + 1}...';
       _currentIndex = index;
     });
@@ -335,10 +348,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
               ),
               onLoadStop: (controller, url) async {
                 
-                // حالا کنترل دست فلاتره. بررسی میکنه که آیا قبلا برای این اکانت تزریق انجام شده یا نه
                 if (url != null && url.host.contains('okala.com') && !_hasInjectedForCurrentAccount) {
                   
-                  // همون لحظه پرچم رو میبندیم که دیگه به هیچ وجه تو ساب‌دامین‌های دیگه (مثل صفحه پرداخت) اجرا نشه
                   _hasInjectedForCurrentAccount = true; 
                   
                   final String base64Data = base64Encode(utf8.encode(jsonEncode(_currentLocalData)));
