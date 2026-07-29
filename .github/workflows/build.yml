@@ -1,4 +1,4 @@
-name: Build HyperLink APK
+Name: Build HyperLink APK
 
 on:
   push:
@@ -43,6 +43,10 @@ jobs:
 
       - name: Install Dependencies
         run: flutter pub get
+
+      # این مرحله برای ساخت اتوماتیک آیکون اضافه شد
+      - name: Generate App Icon
+        run: dart run flutter_launcher_icons
 
       - name: Patch InAppWebView Gradle Compatibility
         run: |
