@@ -19,7 +19,7 @@ class HyperLinkProApp extends StatelessWidget {
       title: 'HyperLink Pro',
       theme: ThemeData(
         primarySwatch: Colors.deepPurple,
-        fontFamily: 'Tahoma', // می‌توانی فونت شبنم یا ایران‌سنس هم اضافه کنی
+        fontFamily: 'Tahoma', 
       ),
       home: const WorkspaceScreen(),
     );
@@ -70,7 +70,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return Scaffold(
       body: Container(
         decoration: const BoxDecoration(
-          gradient: LinearData(
+          gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
             colors: [Color(0xFF4A00E0), Color(0xFF8E2DE2)], // گرادیان بنفش مدرن
