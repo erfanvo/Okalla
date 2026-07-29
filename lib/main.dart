@@ -97,15 +97,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                   ),
                   const SizedBox(height: 16),
                   const Text('HyperLink Pro', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black87)),
-                  const Text('Workspace Management', style: TextStyle(fontSize: 14, color: Colors.grey)),
+                  const Text('مدیریت همزمان اکانت‌ها', style: TextStyle(fontSize: 14, color: Colors.grey)), 
                   const SizedBox(height: 32),
                   
                   TextField(
                     controller: _linksController,
                     maxLines: 6,
-                    textDirection: TextDirection.ltr,
+                    textDirection: TextDirection.ltr, 
+                    textAlign: TextAlign.right, 
                     decoration: InputDecoration(
-                      hintText: 'لینک‌ها را اینجا پیست کنید...\n(پشتیبانی از چندین لینک و متن‌های درهم)',
+                      hintText: 'لینک هارا در این قسمت جایگذاری کنید...\n', 
+                      hintStyle: const TextStyle(color: Colors.black38, fontSize: 13), 
                       filled: true,
                       fillColor: Colors.grey.shade100,
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
@@ -125,7 +127,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       ),
                       onPressed: _processLinks,
                       icon: const Icon(Icons.flash_on_rounded, color: Colors.white),
-                      label: const Text('شروع کار گروهی', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                      label: const Text('ورود به اکانت‌ها', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold, fontFamily: 'Tahoma')), 
                     ),
                   ),
                   if (_statusMessage.isNotEmpty) ...[
@@ -156,6 +158,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
   bool _isLoading = true;
   String _loadingMessage = 'در حال آماده‌سازی...';
   
+  // این متغیر جدید جلوی تمام مشکلات پرداخت و لوپ شدن رو میگیره
+  bool _hasInjectedForCurrentAccount = false; 
+  
   List<dynamic> _currentLocalData = [];
   String? _currentTokenMs;
   String? _currentRefreshToken;
@@ -171,6 +176,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
   Future<void> _loadAccount(int index) async {
     setState(() {
       _isLoading = true;
+      _hasInjectedForCurrentAccount = false; // برای هر اکانت جدید، این متغیر رو صفر می‌کنیم
       _loadingMessage = 'در حال دریافت اطلاعات اکانت ${index + 1}...';
       _currentIndex = index;
     });
@@ -329,47 +335,46 @@ class _BrowserScreenState extends State<BrowserScreen> {
               ),
               onLoadStop: (controller, url) async {
                 
-                // شرط جدید برای جلوگیری از تداخل با درگاه‌های پرداخت
-                if (url != null && url.host.contains('okala.com')) {
+                // حالا کنترل دست فلاتره. بررسی میکنه که آیا قبلا برای این اکانت تزریق انجام شده یا نه
+                if (url != null && url.host.contains('okala.com') && !_hasInjectedForCurrentAccount) {
+                  
+                  // همون لحظه پرچم رو میبندیم که دیگه به هیچ وجه تو ساب‌دامین‌های دیگه (مثل صفحه پرداخت) اجرا نشه
+                  _hasInjectedForCurrentAccount = true; 
                   
                   final String base64Data = base64Encode(utf8.encode(jsonEncode(_currentLocalData)));
                   final String injectionJs = """
                     try {
-                      if (!sessionStorage.getItem('injected_once')) {
-                          
-                          var decodedData = decodeURIComponent(escape(window.atob('$base64Data')));
-                          var items = JSON.parse(decodedData);
-                          
-                          localStorage.clear();
-                          sessionStorage.clear();
-                          
-                          items.forEach(item => {
-                            var finalValue = item.value;
-                            if (item.name === 'user' || item.name === 'persist:root') {
-                               if (finalValue.includes('%7B')) {
-                                  var decodedObjStr = decodeURIComponent(finalValue);
-                                  if (decodedObjStr.includes('"stateCode": 0')) {
-                                      decodedObjStr = decodedObjStr.replace(/"stateCode":\\s*0/g, '"stateCode": 1');
-                                      decodedObjStr = decodedObjStr.replace(/"customerIsLoggedInForFirstTime":\\s*true/g, '"customerIsLoggedInForFirstTime": false');
-                                      finalValue = encodeURIComponent(decodedObjStr);
-                                  }
-                               } 
-                               else if (finalValue.includes('"stateCode": 0')) {
-                                  finalValue = finalValue.replace(/\\\\"stateCode\\\\":\\s*0/g, '\\\\"stateCode\\\\": 1');
-                                  finalValue = finalValue.replace(/\\\\"customerIsLoggedInForFirstTime\\\\":\\s*true/g, '\\\\"customerIsLoggedInForFirstTime\\\\": false');
-                               }
-                            }
-                            localStorage.setItem(item.name, finalValue);
-                          });
-                          
-                          var tMs = '${_currentTokenMs ?? ''}';
-                          var rTk = '${_currentRefreshToken ?? ''}';
-                          if (tMs !== '') { localStorage.setItem('tokenMS', tMs); localStorage.setItem('token', tMs); }
-                          if (rTk !== '') { localStorage.setItem('refresh_token', rTk); }
-                          
-                          sessionStorage.setItem('injected_once', 'true');
-                          window.location.replace('https://www.okala.com/');
-                      }
+                      var decodedData = decodeURIComponent(escape(window.atob('$base64Data')));
+                      var items = JSON.parse(decodedData);
+                      
+                      localStorage.clear();
+                      sessionStorage.clear();
+                      
+                      items.forEach(item => {
+                        var finalValue = item.value;
+                        if (item.name === 'user' || item.name === 'persist:root') {
+                           if (finalValue.includes('%7B')) {
+                              var decodedObjStr = decodeURIComponent(finalValue);
+                              if (decodedObjStr.includes('"stateCode": 0')) {
+                                  decodedObjStr = decodedObjStr.replace(/"stateCode":\\s*0/g, '"stateCode": 1');
+                                  decodedObjStr = decodedObjStr.replace(/"customerIsLoggedInForFirstTime":\\s*true/g, '"customerIsLoggedInForFirstTime": false');
+                                  finalValue = encodeURIComponent(decodedObjStr);
+                              }
+                           } 
+                           else if (finalValue.includes('"stateCode": 0')) {
+                              finalValue = finalValue.replace(/\\\\"stateCode\\\\":\\s*0/g, '\\\\"stateCode\\\\": 1');
+                              finalValue = finalValue.replace(/\\\\"customerIsLoggedInForFirstTime\\\\":\\s*true/g, '\\\\"customerIsLoggedInForFirstTime\\\\": false');
+                           }
+                        }
+                        localStorage.setItem(item.name, finalValue);
+                      });
+                      
+                      var tMs = '${_currentTokenMs ?? ''}';
+                      var rTk = '${_currentRefreshToken ?? ''}';
+                      if (tMs !== '') { localStorage.setItem('tokenMS', tMs); localStorage.setItem('token', tMs); }
+                      if (rTk !== '') { localStorage.setItem('refresh_token', rTk); }
+                      
+                      window.location.replace('https://www.okala.com/');
                     } catch(e) {
                       console.error("Storage Injection Error:", e);
                     }
@@ -398,4 +403,3 @@ class _BrowserScreenState extends State<BrowserScreen> {
     );
   }
 }
-
