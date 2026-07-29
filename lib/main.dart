@@ -105,7 +105,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     maxLines: 6,
                     textDirection: TextDirection.ltr,
                     decoration: InputDecoration(
-                      hintText: 'میتوانید یک یا چند لینک را اینجا جایگذاری کنید...\n()',
+                      hintText: 'لینک‌ها را اینجا پیست کنید...\n(پشتیبانی از چندین لینک و متن‌های درهم)',
                       filled: true,
                       fillColor: Colors.grey.shade100,
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
@@ -125,7 +125,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       ),
                       onPressed: _processLinks,
                       icon: const Icon(Icons.flash_on_rounded, color: Colors.white),
-                      label: const Text('ورود به اکانت', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                      label: const Text('شروع کار گروهی', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
                     ),
                   ),
                   if (_statusMessage.isNotEmpty) ...[
@@ -325,54 +325,57 @@ class _BrowserScreenState extends State<BrowserScreen> {
                 domStorageEnabled: true,
                 thirdPartyCookiesEnabled: true,
                 clearCache: true,
-                clearSessionCache: true, // این اضافه شد تا سشن قبلی کامل پاک بشه
+                clearSessionCache: true, 
               ),
               onLoadStop: (controller, url) async {
-                final String base64Data = base64Encode(utf8.encode(jsonEncode(_currentLocalData)));
-                final String injectionJs = """
-                  try {
-                    // شرط اومد بیرون تا لوپ بی‌نهایت نگیره
-                    if (!sessionStorage.getItem('injected_once')) {
-                        
-                        var decodedData = decodeURIComponent(escape(window.atob('$base64Data')));
-                        var items = JSON.parse(decodedData);
-                        
-                        localStorage.clear();
-                        sessionStorage.clear();
-                        
-                        items.forEach(item => {
-                          var finalValue = item.value;
-                          if (item.name === 'user' || item.name === 'persist:root') {
-                             if (finalValue.includes('%7B')) {
-                                var decodedObjStr = decodeURIComponent(finalValue);
-                                if (decodedObjStr.includes('"stateCode": 0')) {
-                                    decodedObjStr = decodedObjStr.replace(/"stateCode":\\s*0/g, '"stateCode": 1');
-                                    decodedObjStr = decodedObjStr.replace(/"customerIsLoggedInForFirstTime":\\s*true/g, '"customerIsLoggedInForFirstTime": false');
-                                    finalValue = encodeURIComponent(decodedObjStr);
-                                }
-                             } 
-                             else if (finalValue.includes('"stateCode": 0')) {
-                                finalValue = finalValue.replace(/\\\\"stateCode\\\\":\\s*0/g, '\\\\"stateCode\\\\": 1');
-                                finalValue = finalValue.replace(/\\\\"customerIsLoggedInForFirstTime\\\\":\\s*true/g, '\\\\"customerIsLoggedInForFirstTime\\\\": false');
-                             }
-                          }
-                          localStorage.setItem(item.name, finalValue);
-                        });
-                        
-                        var tMs = '${_currentTokenMs ?? ''}';
-                        var rTk = '${_currentRefreshToken ?? ''}';
-                        if (tMs !== '') { localStorage.setItem('tokenMS', tMs); localStorage.setItem('token', tMs); }
-                        if (rTk !== '') { localStorage.setItem('refresh_token', rTk); }
-                        
-                        // اینجا فلگ رو ست میکنیم و بعدش رفرش میشه
-                        sessionStorage.setItem('injected_once', 'true');
-                        window.location.replace('https://www.okala.com/');
+                
+                // شرط جدید برای جلوگیری از تداخل با درگاه‌های پرداخت
+                if (url != null && url.host.contains('okala.com')) {
+                  
+                  final String base64Data = base64Encode(utf8.encode(jsonEncode(_currentLocalData)));
+                  final String injectionJs = """
+                    try {
+                      if (!sessionStorage.getItem('injected_once')) {
+                          
+                          var decodedData = decodeURIComponent(escape(window.atob('$base64Data')));
+                          var items = JSON.parse(decodedData);
+                          
+                          localStorage.clear();
+                          sessionStorage.clear();
+                          
+                          items.forEach(item => {
+                            var finalValue = item.value;
+                            if (item.name === 'user' || item.name === 'persist:root') {
+                               if (finalValue.includes('%7B')) {
+                                  var decodedObjStr = decodeURIComponent(finalValue);
+                                  if (decodedObjStr.includes('"stateCode": 0')) {
+                                      decodedObjStr = decodedObjStr.replace(/"stateCode":\\s*0/g, '"stateCode": 1');
+                                      decodedObjStr = decodedObjStr.replace(/"customerIsLoggedInForFirstTime":\\s*true/g, '"customerIsLoggedInForFirstTime": false');
+                                      finalValue = encodeURIComponent(decodedObjStr);
+                                  }
+                               } 
+                               else if (finalValue.includes('"stateCode": 0')) {
+                                  finalValue = finalValue.replace(/\\\\"stateCode\\\\":\\s*0/g, '\\\\"stateCode\\\\": 1');
+                                  finalValue = finalValue.replace(/\\\\"customerIsLoggedInForFirstTime\\\\":\\s*true/g, '\\\\"customerIsLoggedInForFirstTime\\\\": false');
+                               }
+                            }
+                            localStorage.setItem(item.name, finalValue);
+                          });
+                          
+                          var tMs = '${_currentTokenMs ?? ''}';
+                          var rTk = '${_currentRefreshToken ?? ''}';
+                          if (tMs !== '') { localStorage.setItem('tokenMS', tMs); localStorage.setItem('token', tMs); }
+                          if (rTk !== '') { localStorage.setItem('refresh_token', rTk); }
+                          
+                          sessionStorage.setItem('injected_once', 'true');
+                          window.location.replace('https://www.okala.com/');
+                      }
+                    } catch(e) {
+                      console.error("Storage Injection Error:", e);
                     }
-                  } catch(e) {
-                    console.error("Storage Injection Error:", e);
-                  }
-                """;
-                await controller.evaluateJavascript(source: injectionJs);
+                  """;
+                  await controller.evaluateJavascript(source: injectionJs);
+                }
               },
             ),
 
