@@ -1,6 +1,9 @@
-name: hyperlink
-description: HyperLink Secure Authentication Workspace.
+name: hyperlink_pro
+description: Workspace Management App.
+
+# جلوگیری از انتشار تصادفی پکیج
 publish_to: 'none'
+
 version: 1.0.0+1
 
 environment:
@@ -9,9 +12,30 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  cupertino_icons: ^1.0.2
+  
+  # پکیج‌های استفاده شده در برنامه
+  http: ^1.2.0
   flutter_inappwebview: ^6.0.0
-  http: ^1.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+  
+  # پکیج ساخت آیکون برنامه
+  flutter_launcher_icons: ^0.13.1
+
+# تنظیمات ساخت آیکون (برای گیت‌هاب اکشنز و بیلد محلی)
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: true
+  image_path: "assets/9w.jpg"
+  min_sdk_size: 21
 
 flutter:
   uses-material-design: true
-
+  
+  # معرفی پوشه و عکس‌ها به فلاتر
+  assets:
+    - assets/9w.jpg
