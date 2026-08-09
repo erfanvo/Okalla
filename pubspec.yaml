@@ -1,5 +1,5 @@
-name: hyperlink_pro
-description: Workspace Management App.
+name: baran_link
+description: baran link link management app.
 
 # جلوگیری از انتشار تصادفی پکیج
 publish_to: 'none'
@@ -30,10 +30,15 @@ dev_dependencies:
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: false
-  image_path: "assets/9w.jpg"
+  image_path: "assets/baran_link_icon.png"
   min_sdk_size: 21
 
 flutter:
+  uses-material-design: true
+  
+  # معرفی پوشه و عکس‌ها به فلاتر
+  assets:
+    - assets/baran_link_icon.png
   uses-material-design: true
   
   # معرفی پوشه و عکس‌ها به فلاتر
