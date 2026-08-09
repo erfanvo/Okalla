@@ -1,4 +1,4 @@
-name: Build HyperLink APK
+name: Build baran link APK
 
 on:
   push:
@@ -30,7 +30,7 @@ jobs:
           rm -rf android
           
           # ۲. اجبار فلاتر به ساخت مجدد و کامل پلتفرم اندروید
-          flutter create --platforms=android --project-name hyperlink --org com.hyperlink.app .
+          flutter create --platforms=android --project-name baran_link --org com.hyperlink.app .
           
           # ۳. ارتقای نسخه اندروید در تمامی فرمت‌های احتمالی (gradle و kts)
           sed -i 's/flutter.minSdkVersion/24/g' android/app/build.gradle*
@@ -40,6 +40,9 @@ jobs:
           
           # ۴. افزودن دسترسی اینترنت به صورت مستقیم
           sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET"/>' android/app/src/main/AndroidManifest.xml
+          
+          # ۵. نام نمایشی برنامه
+          sed -i 's/android:label="baran_link"/android:label="baran link"/' android/app/src/main/AndroidManifest.xml
 
       - name: Install Dependencies
         run: flutter pub get
@@ -60,5 +63,5 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: HyperLink-App-Optimized
+          name: baran-link-app-optimized
           path: build/app/outputs/flutter-apk/*-release.apk
