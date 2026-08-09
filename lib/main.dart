@@ -2,24 +2,35 @@ import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'dart:collection';
+
+const String allowedLinkHost = 'okala.baranlink.cyou';
+const String storeHost = 'www.okala.com';
+const Color navy = Color(0xFF0B1F3A);
+const Color navyLight = Color(0xFF163A63);
+const Color gold = Color(0xFFC69B4A);
+const Color cream = Color(0xFFF7F2E8);
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const HyperLinkProApp());
+  runApp(const BaranLinkApp());
 }
 
-class HyperLinkProApp extends StatelessWidget {
-  const HyperLinkProApp({Key? key}) : super(key: key);
+class BaranLinkApp extends StatelessWidget {
+  const BaranLinkApp({Key? key}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'HyperLink Pro',
+      title: 'baran link',
       theme: ThemeData(
-        primarySwatch: Colors.deepPurple,
-        fontFamily: 'Tahoma', 
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: navy,
+          brightness: Brightness.light,
+        ),
+        scaffoldBackgroundColor: cream,
+        fontFamily: 'Tahoma',
+        useMaterial3: true,
       ),
       home: const WorkspaceScreen(),
     );
@@ -37,20 +48,50 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   final TextEditingController _linksController = TextEditingController();
   String _statusMessage = '';
 
+  @override
+  void dispose() {
+    _linksController.dispose();
+    super.dispose();
+  }
+
+  bool _isAllowedLink(String value) {
+    final uri = Uri.tryParse(value.trim());
+    return uri != null &&
+        uri.scheme.toLowerCase() == 'https' &&
+        uri.host.toLowerCase() == allowedLinkHost &&
+        uri.userInfo.isEmpty &&
+        (uri.port == 0 || uri.port == 443);
+  }
+
   void _processLinks() {
     final text = _linksController.text;
     if (text.trim().isEmpty) {
-      setState(() => _statusMessage = 'لطفاً لینک‌ها را وارد کنید.');
+      setState(() => _statusMessage = 'لطفاً پیوندها را وارد کنید.');
       return;
     }
 
     final RegExp linkRegex = RegExp(r'(https?:\/\/[^\s]+)');
     final Iterable<Match> matches = linkRegex.allMatches(text);
-    
-    List<String> extractedUrls = matches.map((m) => m.group(0)!).toList();
+
+    final List<String> extractedUrls = matches
+        .map((match) => match.group(0)!.replaceFirst(RegExp(r'[،,؛;.!؟]+$'), ''))
+        .where(_isAllowedLink)
+        .toList();
 
     if (extractedUrls.isEmpty) {
-      setState(() => _statusMessage = 'هیچ لینک معتبری در متن یافت نشد!');
+      setState(
+        () => _statusMessage =
+            'تنها پیوندهای دامنه $allowedLinkHost پذیرفته می‌شوند.',
+      );
+      return;
+    }
+
+    final totalLinks = matches.length;
+    if (extractedUrls.length != totalLinks) {
+      setState(
+        () => _statusMessage =
+            'برخی پیوندها خارج از دامنه مجاز هستند.',
+      );
       return;
     }
 
@@ -66,92 +107,230 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0xFF4A00E0), Color(0xFF8E2DE2)], 
-          ),
-        ),
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24.0),
-            child: Container(
-              padding: const EdgeInsets.all(32.0),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(24.0),
-                boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 30, offset: Offset(0, 10))],
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // اضافه شدن لوگوی جدید با استایل مدرن
-                  Container(
-                    width: 88,
-                    height: 88,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(22.0),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Colors.black26,
-                          blurRadius: 15,
-                          offset: Offset(0, 8),
-                        ),
-                      ],
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(22.0),
-                      child: Image.asset(
-                        'assets/9w.jpg',
-                        fit: BoxFit.cover,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  const Text('HyperLink Pro', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black87)),
-                  const Text('مدیریت همزمان اکانت‌ها', style: TextStyle(fontSize: 14, color: Colors.grey)), 
-                  const SizedBox(height: 32),
-                  
-                  TextField(
-                    controller: _linksController,
-                    maxLines: 6,
-                    textDirection: TextDirection.ltr, 
-                    textAlign: TextAlign.right, 
-                    decoration: InputDecoration(
-                      hintText: 'لینک هارا در این قسمت جایگذاری کنید...\n', 
-                      hintStyle: const TextStyle(color: Colors.black38, fontSize: 13), 
-                      filled: true,
-                      fillColor: Colors.grey.shade100,
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
-                      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: Colors.deepPurple, width: 2)),
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  
-                  SizedBox(
-                    width: double.infinity,
-                    height: 54,
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.deepPurple,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                        elevation: 0,
-                      ),
-                      onPressed: _processLinks,
-                      icon: const Icon(Icons.flash_on_rounded, color: Colors.white),
-                      label: const Text('ورود به اکانت‌ها', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold, fontFamily: 'Tahoma')), 
-                    ),
-                  ),
-                  if (_statusMessage.isNotEmpty) ...[
-                    const SizedBox(height: 16),
-                    Text(_statusMessage, style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
-                  ]
-                ],
+      body: Stack(
+        children: [
+          Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topRight,
+                end: Alignment.bottomLeft,
+                colors: [navyLight, navy],
               ),
             ),
           ),
+          Positioned(
+            top: -130,
+            left: -90,
+            child: _GlowCircle(size: 280, color: gold.withOpacity(.16)),
+          ),
+          Positioned(
+            bottom: -180,
+            right: -100,
+            child: _GlowCircle(size: 340, color: Colors.white.withOpacity(.06)),
+          ),
+          SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(22),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 430),
+                  child: Container(
+                    padding: const EdgeInsets.fromLTRB(24, 28, 24, 24),
+                    decoration: BoxDecoration(
+                      color: cream,
+                      borderRadius: BorderRadius.circular(28),
+                      border: Border.all(color: Colors.white.withOpacity(.35)),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(.28),
+                          blurRadius: 34,
+                          offset: const Offset(0, 18),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Center(
+                          child: Container(
+                            width: 94,
+                            height: 94,
+                            padding: const EdgeInsets.all(4),
+                            decoration: BoxDecoration(
+                              color: navy,
+                              borderRadius: BorderRadius.circular(26),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: navy.withOpacity(.24),
+                                  blurRadius: 16,
+                                  offset: const Offset(0, 8),
+                                ),
+                              ],
+                            ),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(22),
+                              child: Image.asset(
+                                'assets/baran_link_icon.png',
+                                fit: BoxFit.cover,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+                        const Text(
+                          'baran link',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: navy,
+                            fontSize: 28,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: .3,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          'مدیریت پیوندهای فروشگاه',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: navy.withOpacity(.64),
+                            fontSize: 13,
+                          ),
+                        ),
+                        const SizedBox(height: 30),
+                        const Text(
+                          'پیوندها',
+                          textAlign: TextAlign.right,
+                          style: TextStyle(
+                            color: navy,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 9),
+                        TextField(
+                          controller: _linksController,
+                          maxLines: 6,
+                          textDirection: TextDirection.ltr,
+                          textAlign: TextAlign.left,
+                          style: const TextStyle(
+                            color: navy,
+                            fontSize: 13,
+                            height: 1.5,
+                          ),
+                          decoration: InputDecoration(
+                            hintText: 'https://$allowedLinkHost/...',
+                            hintStyle: TextStyle(
+                              color: navy.withOpacity(.38),
+                              fontSize: 12,
+                            ),
+                            filled: true,
+                            fillColor: Colors.white.withOpacity(.72),
+                            contentPadding: const EdgeInsets.all(16),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(16),
+                              borderSide: BorderSide(
+                                color: navy.withOpacity(.1),
+                              ),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(16),
+                              borderSide: BorderSide(
+                                color: navy.withOpacity(.12),
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(16),
+                              borderSide: const BorderSide(
+                                color: gold,
+                                width: 1.8,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Text(
+                          'هر پیوند را در یک خط وارد کنید.',
+                          textAlign: TextAlign.right,
+                          style: TextStyle(
+                            color: navy.withOpacity(.5),
+                            fontSize: 11,
+                          ),
+                        ),
+                        const SizedBox(height: 22),
+                        SizedBox(
+                          height: 54,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: navy,
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                            ),
+                            onPressed: _processLinks,
+                            icon: const Icon(Icons.arrow_back_rounded, size: 20),
+                            label: const Text(
+                              'ادامه',
+                              style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700,
+                                fontFamily: 'Tahoma',
+                              ),
+                            ),
+                          ),
+                        ),
+                        if (_statusMessage.isNotEmpty) ...[
+                          const SizedBox(height: 15),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 10,
+                            ),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFBE9E7),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Text(
+                              _statusMessage,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                color: Color(0xFFB3261E),
+                                fontSize: 12,
+                                height: 1.4,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _GlowCircle extends StatelessWidget {
+  final double size;
+  final Color color;
+
+  const _GlowCircle({required this.size, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: color,
         ),
       ),
     );
@@ -190,7 +369,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
     setState(() {
       _isLoading = true;
       _hasInjectedForCurrentAccount = false;
-      _loadingMessage = 'در حال دریافت اطلاعات اکانت ${index + 1}...';
+      _loadingMessage = 'در حال آماده‌سازی ${index + 1}...';
       _currentIndex = index;
     });
 
@@ -210,7 +389,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
         List<dynamic> originsList = data['origins'];
         dynamic matchedOrigin = originsList[0]; 
         for (var o in originsList) {
-          if (o is Map && o['origin'] != null && o['origin'].toString().contains('okala.com')) {
+          if (o is Map &&
+              o['origin'] != null &&
+              o['origin'].toString().contains(storeHost)) {
             matchedOrigin = o;
             break;
           }
@@ -237,18 +418,18 @@ class _BrowserScreenState extends State<BrowserScreen> {
       }
 
       if (tMs != null) {
-        await cookieManager.setCookie(url: WebUri("https://www.okala.com"), name: "tokenMS", value: tMs, domain: ".okala.com", path: "/", isSecure: true, sameSite: HTTPCookieSameSitePolicy.NONE);
-        await cookieManager.setCookie(url: WebUri("https://www.okala.com"), name: "token", value: tMs, domain: ".okala.com", path: "/", isSecure: true, sameSite: HTTPCookieSameSitePolicy.NONE);
+        await cookieManager.setCookie(url: WebUri("https://$storeHost"), name: "tokenMS", value: tMs, domain: ".okala.com", path: "/", isSecure: true, sameSite: HTTPCookieSameSitePolicy.NONE);
+        await cookieManager.setCookie(url: WebUri("https://$storeHost"), name: "token", value: tMs, domain: ".okala.com", path: "/", isSecure: true, sameSite: HTTPCookieSameSitePolicy.NONE);
       }
       if (rTk != null) {
-        await cookieManager.setCookie(url: WebUri("https://www.okala.com"), name: "refresh_token", value: rTk, domain: ".okala.com", path: "/", isSecure: true, sameSite: HTTPCookieSameSitePolicy.NONE);
+        await cookieManager.setCookie(url: WebUri("https://$storeHost"), name: "refresh_token", value: rTk, domain: ".okala.com", path: "/", isSecure: true, sameSite: HTTPCookieSameSitePolicy.NONE);
       }
 
       for (var c in cookies) {
         if (c['name'] != 'tokenMS' && c['name'] != 'refresh_token' && c['name'] != 'token') {
           String rawDomain = c['domain']?.toString() ?? ".okala.com";
           String domain = rawDomain.startsWith('.') ? rawDomain : '.$rawDomain';
-          await cookieManager.setCookie(url: WebUri("https://www.okala.com"), name: c['name'], value: c['value'], domain: domain, path: c['path'] ?? "/", isSecure: true, sameSite: HTTPCookieSameSitePolicy.NONE);
+          await cookieManager.setCookie(url: WebUri("https://$storeHost"), name: c['name'], value: c['value'], domain: domain, path: c['path'] ?? "/", isSecure: true, sameSite: HTTPCookieSameSitePolicy.NONE);
         }
       }
 
@@ -272,7 +453,10 @@ class _BrowserScreenState extends State<BrowserScreen> {
       _loadAccount(_currentIndex + 1);
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('شما در آخرین اکانت هستید!'), backgroundColor: Colors.green),
+        const SnackBar(
+          content: Text('آخرین مورد در حال نمایش است.'),
+          backgroundColor: navy,
+        ),
       );
     }
   }
@@ -281,15 +465,26 @@ class _BrowserScreenState extends State<BrowserScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('اکانت ${_currentIndex + 1} از ${widget.urls.length}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
-        backgroundColor: Colors.deepPurple,
+        title: Text(
+          'baran link  ·  ${_currentIndex + 1} / ${widget.urls.length}',
+          style: const TextStyle(
+            fontSize: 15,
+            fontWeight: FontWeight.w700,
+            color: Colors.white,
+          ),
+        ),
+        backgroundColor: navy,
+        elevation: 0,
         iconTheme: const IconThemeData(color: Colors.white),
         actions: [
           if (_currentIndex < widget.urls.length - 1)
             TextButton.icon(
               onPressed: _nextAccount,
-              icon: const Icon(Icons.skip_next_rounded, color: Colors.white),
-              label: const Text('بعدی', style: TextStyle(color: Colors.white)),
+              icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
+              label: const Text(
+                'بعدی',
+                style: TextStyle(color: Colors.white, fontFamily: 'Tahoma'),
+              ),
             ),
         ],
       ),
@@ -298,13 +493,43 @@ class _BrowserScreenState extends State<BrowserScreen> {
           children: [
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.only(top: 50, bottom: 20),
-              color: Colors.deepPurple,
+              padding: const EdgeInsets.only(top: 52, bottom: 24),
+              color: navy,
               child: Column(
                 children: [
-                  const Icon(Icons.list_alt_rounded, color: Colors.white, size: 48),
-                  const SizedBox(height: 10),
-                  Text('لیست اکانت‌ها (${widget.urls.length})', style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                  Container(
+                    width: 64,
+                    height: 64,
+                    padding: const EdgeInsets.all(3),
+                    decoration: BoxDecoration(
+                      color: cream,
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(15),
+                      child: Image.asset(
+                        'assets/baran_link_icon.png',
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'baran link',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 19,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${widget.urls.length} پیوند',
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(.68),
+                      fontSize: 12,
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -315,13 +540,26 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   final isActive = index == _currentIndex;
                   return ListTile(
                     leading: CircleAvatar(
-                      backgroundColor: isActive ? Colors.deepPurple : Colors.grey.shade300,
-                      child: Text('${index + 1}', style: TextStyle(color: isActive ? Colors.white : Colors.black87, fontSize: 14)),
+                      backgroundColor: isActive ? gold : Colors.grey.shade200,
+                      child: Text(
+                        '${index + 1}',
+                        style: TextStyle(
+                          color: isActive ? navy : Colors.black54,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
                     ),
-                    title: Text('اکانت ${index + 1}', style: TextStyle(fontWeight: isActive ? FontWeight.bold : FontWeight.normal)),
+                    title: Text(
+                      'مورد ${index + 1}',
+                      style: TextStyle(
+                        color: navy,
+                        fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
+                      ),
+                    ),
                     subtitle: Text(widget.urls[index], maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: Colors.grey)),
                     selected: isActive,
-                    selectedTileColor: Colors.deepPurple.shade50,
+                    selectedTileColor: const Color(0xFFE9E3D6),
                     onTap: () {
                       Navigator.pop(context); 
                       if (!isActive) _loadAccount(index);
@@ -338,7 +576,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
           if (!_isLoading)
             InAppWebView(
               key: _webViewKey, 
-              initialUrlRequest: URLRequest(url: WebUri("https://www.okala.com/")),
+               initialUrlRequest: URLRequest(url: WebUri("https://$storeHost/")),
               initialSettings: InAppWebViewSettings(
                 javaScriptEnabled: true,
                 domStorageEnabled: true,
@@ -348,7 +586,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
               ),
               onLoadStop: (controller, url) async {
                 
-                if (url != null && url.host.contains('okala.com') && !_hasInjectedForCurrentAccount) {
+                if (url != null &&
+                    url.host.toLowerCase().contains('okala.com') &&
+                    !_hasInjectedForCurrentAccount) {
                   
                   _hasInjectedForCurrentAccount = true; 
                   
@@ -385,7 +625,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
                       if (tMs !== '') { localStorage.setItem('tokenMS', tMs); localStorage.setItem('token', tMs); }
                       if (rTk !== '') { localStorage.setItem('refresh_token', rTk); }
                       
-                      window.location.replace('https://www.okala.com/');
+                      window.location.replace('https://$storeHost/');
                     } catch(e) {
                       console.error("Storage Injection Error:", e);
                     }
@@ -402,9 +642,16 @@ class _BrowserScreenState extends State<BrowserScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const CircularProgressIndicator(color: Colors.deepPurple),
+                    const CircularProgressIndicator(color: gold),
                     const SizedBox(height: 16),
-                    Text(_loadingMessage, style: const TextStyle(color: Colors.deepPurple, fontWeight: FontWeight.bold, fontSize: 16)),
+                    Text(
+                      _loadingMessage,
+                      style: const TextStyle(
+                        color: navy,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
                   ],
                 ),
               ),
