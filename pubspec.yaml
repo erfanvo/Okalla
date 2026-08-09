@@ -39,8 +39,4 @@ flutter:
   # معرفی پوشه و عکس‌ها به فلاتر
   assets:
     - assets/baran_link_icon.png
-  uses-material-design: true
-  
-  # معرفی پوشه و عکس‌ها به فلاتر
-  assets:
     - assets/9w.jpg
