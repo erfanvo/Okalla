@@ -3,7 +3,10 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 
-const String allowedLinkHost = 'okala.baranlink.cyou';
+const List<String> allowedLinkHosts = [
+  'okala.baranlink.cyou',
+  'okalaa.baranlink.cyou',
+];
 const String storeHost = 'www.okala.com';
 const Color navy = Color(0xFF0B1F3A);
 const Color navyLight = Color(0xFF163A63);
@@ -54,11 +57,23 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     super.dispose();
   }
 
+  String _normaliseLink(String value) {
+    final withoutTrailingPunctuation = value
+        .trim()
+        .replaceFirst(RegExp(r'[،,؛;.!؟]+$'), '');
+
+    if (withoutTrailingPunctuation.contains('://')) {
+      return withoutTrailingPunctuation;
+    }
+
+    return 'https://$withoutTrailingPunctuation';
+  }
+
   bool _isAllowedLink(String value) {
-    final uri = Uri.tryParse(value.trim());
+    final uri = Uri.tryParse(_normaliseLink(value));
     return uri != null &&
         uri.scheme.toLowerCase() == 'https' &&
-        uri.host.toLowerCase() == allowedLinkHost &&
+        allowedLinkHosts.contains(uri.host.toLowerCase()) &&
         uri.userInfo.isEmpty &&
         (uri.port == 0 || uri.port == 443);
   }
@@ -70,18 +85,24 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
-    final RegExp linkRegex = RegExp(r'(https?:\/\/[^\s]+)');
+    // Accept full URLs as before, as well as either supported domain entered
+    // directly (for example: Okalaa.baranlink.cyou/path). The boundary
+    // prevents the bare-domain pattern from matching another hostname.
+    final RegExp linkRegex = RegExp(
+      r'(?:https?:\/\/[^\s]+|(?<![A-Za-z0-9.-])okalaa?\.baranlink\.cyou(?::\d+)?(?:[\/?#][^\s]*)?)',
+      caseSensitive: false,
+    );
     final Iterable<Match> matches = linkRegex.allMatches(text);
 
     final List<String> extractedUrls = matches
-        .map((match) => match.group(0)!.replaceFirst(RegExp(r'[،,؛;.!؟]+$'), ''))
+        .map((match) => _normaliseLink(match.group(0)!))
         .where(_isAllowedLink)
         .toList();
 
     if (extractedUrls.isEmpty) {
       setState(
         () => _statusMessage =
-            'تنها پیوندهای دامنه $allowedLinkHost پذیرفته می‌شوند.',
+            'تنها پیوندهای دامنه ${allowedLinkHosts.join(' و ')} پذیرفته می‌شوند.',
       );
       return;
     }
@@ -219,7 +240,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                             height: 1.5,
                           ),
                           decoration: InputDecoration(
-                            hintText: 'https://$allowedLinkHost/...',
+                            hintText: 'https://${allowedLinkHosts.first}/... یا ${allowedLinkHosts.last}/...',
                             hintStyle: TextStyle(
                               color: navy.withOpacity(.38),
                               fontSize: 12,
@@ -661,3 +682,4 @@ class _BrowserScreenState extends State<BrowserScreen> {
     );
   }
 }
+
