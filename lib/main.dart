@@ -71,9 +71,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   bool _isAllowedLink(String value) {
     final uri = Uri.tryParse(_normaliseLink(value));
-    return uri != null &&
+    if (uri == null) return false;
+    
+    final host = uri.host.toLowerCase();
+    
+    // Check if host matches allowed hosts exactly
+    bool isAllowed = allowedLinkHosts.any((allowedHost) => host == allowedHost);
+    
+    return isAllowed &&
         uri.scheme.toLowerCase() == 'https' &&
-        allowedLinkHosts.contains(uri.host.toLowerCase()) &&
         uri.userInfo.isEmpty &&
         (uri.port == 0 || uri.port == 443);
   }
@@ -85,19 +91,23 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
-    // Accept full URLs as before, as well as either supported domain entered
-    // directly (for example: Okalaa.baranlink.cyou/path). The boundary
-    // prevents the bare-domain pattern from matching another hostname.
-    final RegExp linkRegex = RegExp(
-      r'(?:https?:\/\/[^\s]+|(?<![A-Za-z0-9.-])okalaa?\.baranlink\.cyou(?::\d+)?(?:[\/?#][^\s]*)?)',
-      caseSensitive: false,
-    );
-    final Iterable<Match> matches = linkRegex.allMatches(text);
+    // Process each line separately
+    final lines = text.split('\n');
+    final List<String> extractedUrls = [];
+    int invalidCount = 0;
 
-    final List<String> extractedUrls = matches
-        .map((match) => _normaliseLink(match.group(0)!))
-        .where(_isAllowedLink)
-        .toList();
+    for (var line in lines) {
+      line = line.trim();
+      if (line.isEmpty) continue;
+
+      // Normalize and validate the link
+      final normalized = _normaliseLink(line);
+      if (_isAllowedLink(line)) {
+        extractedUrls.add(normalized);
+      } else {
+        invalidCount++;
+      }
+    }
 
     if (extractedUrls.isEmpty) {
       setState(
@@ -107,11 +117,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
-    final totalLinks = matches.length;
-    if (extractedUrls.length != totalLinks) {
+    // If there are invalid links, show warning
+    if (invalidCount > 0) {
       setState(
         () => _statusMessage =
-            'برخی پیوندها خارج از دامنه مجاز هستند.',
+            '$invalidCount پیون�� خارج از دامنه مجاز حذف شد. ${extractedUrls.length} پیوند معتبر باقی مانده است.',
       );
       return;
     }
@@ -682,4 +692,3 @@ class _BrowserScreenState extends State<BrowserScreen> {
     );
   }
 }
-
