@@ -4,7 +4,8 @@ description: Nexus link management app.
 # جلوگیری از انتشار تصادفی پکیج
 publish_to: 'none'
 
-version: 1.0.0+1
+# ورژن به 1.0.1 ارتقا یافت
+version: 1.0.1+2
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -26,11 +27,13 @@ dev_dependencies:
   # پکیج ساخت آیکون برنامه
   flutter_launcher_icons: ^0.13.1
 
-# تنظیمات ساخت آیکون (برای گیت‌هاب اکشنز و بیلد محلی)
+# تنظیمات ساخت آیکون (اصلاح شده برای رفع مشکل سایز)
 flutter_launcher_icons:
-  android: "launcher_icon"
+  android: true
   ios: false
   image_path: "assets/nexus_icon.png"
+  adaptive_icon_background: "#1E212D" # رنگ تم برنامه برای پس‌زمینه آیکون
+  adaptive_icon_foreground: "assets/nexus_icon.png"
   min_sdk_size: 21
 
 flutter:
@@ -39,4 +42,3 @@ flutter:
   # معرفی پوشه و عکس‌ها به فلاتر
   assets:
     - assets/nexus_icon.png
-    
