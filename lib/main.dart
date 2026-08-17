@@ -4,34 +4,37 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 
 const List<String> allowedLinkHosts = [
-  'okala.baranlink.cyou',
-  'okalaa.baranlink.cyou',
+  'okalav2.up.railway.app',
 ];
 const String storeHost = 'www.okala.com';
-const Color navy = Color(0xFF0B1F3A);
-const Color navyLight = Color(0xFF163A63);
-const Color gold = Color(0xFFC69B4A);
-const Color cream = Color(0xFFF7F2E8);
+
+// پالت رنگی (تم تاریک و مدرن)
+const Color bgDark = Color(0xFF12141D); 
+const Color surfaceDark = Color(0xFF1E212D); 
+const Color primaryAccent = Color(0xFF00D09E); 
+const Color textPrimary = Color(0xFFF3F4F6); 
+const Color textSecondary = Color(0xFF9CA3AF); 
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const BaranLinkApp());
+  runApp(const NexusLinkApp());
 }
 
-class BaranLinkApp extends StatelessWidget {
-  const BaranLinkApp({Key? key}) : super(key: key);
+class NexusLinkApp extends StatelessWidget {
+  const NexusLinkApp({Key? key}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'baran link',
+      title: 'Nexus Link',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: navy,
-          brightness: Brightness.light,
+        colorScheme: const ColorScheme.dark(
+          primary: primaryAccent,
+          surface: surfaceDark,
+          background: bgDark,
         ),
-        scaffoldBackgroundColor: cream,
+        scaffoldBackgroundColor: bgDark,
         fontFamily: 'Tahoma',
         useMaterial3: true,
       ),
@@ -58,15 +61,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   String _normaliseLink(String value) {
-    final withoutTrailingPunctuation = value
+    String cleaned = value
+        .replaceAll(RegExp(r'[\u200B-\u200D\uFEFF]'), '')
         .trim()
         .replaceFirst(RegExp(r'[،,؛;.!؟]+$'), '');
 
-    if (withoutTrailingPunctuation.contains('://')) {
-      return withoutTrailingPunctuation;
+    if (cleaned.toLowerCase().startsWith('http://')) {
+      cleaned = 'https://${cleaned.substring(7)}';
+    } else if (!cleaned.toLowerCase().startsWith('https://')) {
+      cleaned = 'https://$cleaned';
     }
-
-    return 'https://$withoutTrailingPunctuation';
+    return Uri.encodeFull(cleaned);
   }
 
   bool _isAllowedLink(String value) {
@@ -74,14 +79,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     if (uri == null) return false;
     
     final host = uri.host.toLowerCase();
-    
-    // Check if host matches allowed hosts exactly
     bool isAllowed = allowedLinkHosts.any((allowedHost) => host == allowedHost);
     
     return isAllowed &&
         uri.scheme.toLowerCase() == 'https' &&
-        uri.userInfo.isEmpty &&
-        (uri.port == 0 || uri.port == 443);
+        uri.userInfo.isEmpty;
   }
 
   void _processLinks() {
@@ -91,18 +93,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       return;
     }
 
-    // Process each line separately
-    final lines = text.split('\n');
+    final tokens = text.split(RegExp(r'\s+'));
     final List<String> extractedUrls = [];
     int invalidCount = 0;
 
-    for (var line in lines) {
-      line = line.trim();
-      if (line.isEmpty) continue;
+    for (var token in tokens) {
+      token = token.trim();
+      if (token.isEmpty) continue;
 
-      // Normalize and validate the link
-      final normalized = _normaliseLink(line);
-      if (_isAllowedLink(line)) {
+      final normalized = _normaliseLink(token);
+      if (_isAllowedLink(token)) {
         extractedUrls.add(normalized);
       } else {
         invalidCount++;
@@ -112,16 +112,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     if (extractedUrls.isEmpty) {
       setState(
         () => _statusMessage =
-            'تنها پیوندهای دامنه ${allowedLinkHosts.join(' و ')} پذیرفته می‌شوند.',
+            'تنها پیوندهای دامنه ${allowedLinkHosts.first} پذیرفته می‌شوند.',
       );
       return;
     }
 
-    // If there are invalid links, show warning
     if (invalidCount > 0) {
       setState(
         () => _statusMessage =
-            '$invalidCount پیون�� خارج از دامنه مجاز حذف شد. ${extractedUrls.length} پیوند معتبر باقی مانده است.',
+            '$invalidCount پیوند خارج از دامنه مجاز حذف شد. ${extractedUrls.length} پیوند معتبر باقی مانده است.',
       );
       return;
     }
@@ -138,230 +137,222 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Stack(
-        children: [
-          Container(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topRight,
-                end: Alignment.bottomLeft,
-                colors: [navyLight, navy],
-              ),
-            ),
-          ),
-          Positioned(
-            top: -130,
-            left: -90,
-            child: _GlowCircle(size: 280, color: gold.withOpacity(.16)),
-          ),
-          Positioned(
-            bottom: -180,
-            right: -100,
-            child: _GlowCircle(size: 340, color: Colors.white.withOpacity(.06)),
-          ),
-          SafeArea(
-            child: Center(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(22),
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 430),
-                  child: Container(
-                    padding: const EdgeInsets.fromLTRB(24, 28, 24, 24),
-                    decoration: BoxDecoration(
-                      color: cream,
-                      borderRadius: BorderRadius.circular(28),
-                      border: Border.all(color: Colors.white.withOpacity(.35)),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(.28),
-                          blurRadius: 34,
-                          offset: const Offset(0, 18),
-                        ),
-                      ],
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 450),
+              child: Container(
+                padding: const EdgeInsets.all(32),
+                decoration: BoxDecoration(
+                  color: surfaceDark,
+                  borderRadius: BorderRadius.circular(24),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.4),
+                      blurRadius: 20,
+                      offset: const Offset(0, 10),
                     ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Center(
-                          child: Container(
-                            width: 94,
-                            height: 94,
-                            padding: const EdgeInsets.all(4),
-                            decoration: BoxDecoration(
-                              color: navy,
-                              borderRadius: BorderRadius.circular(26),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: navy.withOpacity(.24),
-                                  blurRadius: 16,
-                                  offset: const Offset(0, 8),
-                                ),
-                              ],
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 80,
+                        height: 80,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: bgDark,
+                          border: Border.all(color: primaryAccent, width: 2),
+                          boxShadow: [
+                            BoxShadow(
+                              color: primaryAccent.withOpacity(0.2),
+                              blurRadius: 15,
+                              spreadRadius: 2,
                             ),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(22),
-                              child: Image.asset(
-                                'assets/baran_link_icon.png',
-                                fit: BoxFit.cover,
-                              ),
+                          ],
+                        ),
+                        child: ClipOval(
+                          child: Padding(
+                            padding: const EdgeInsets.all(12.0),
+                            child: Image.asset(
+                              'assets/nexus_icon.png',
+                              fit: BoxFit.contain,
+                              errorBuilder: (context, error, stackTrace) => 
+                                  const Icon(Icons.link_rounded, size: 40, color: primaryAccent),
                             ),
                           ),
                         ),
-                        const SizedBox(height: 20),
-                        const Text(
-                          'baran link',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: navy,
-                            fontSize: 28,
-                            fontWeight: FontWeight.w800,
-                            letterSpacing: .3,
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    const Text(
+                      'Nexus Link',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: textPrimary,
+                        fontSize: 26,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 1.2,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'سیستم مدیریت یکپارچه پیوندها',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: textSecondary,
+                        fontSize: 14,
+                      ),
+                    ),
+                    const SizedBox(height: 40),
+                    
+                    TextField(
+                      controller: _linksController,
+                      maxLines: 7,
+                      textDirection: TextDirection.ltr,
+                      textAlign: TextAlign.left,
+                      style: const TextStyle(
+                        color: textPrimary,
+                        fontSize: 14,
+                        height: 1.6,
+                      ),
+                      decoration: InputDecoration(
+                        labelText: 'لیست پیوندها',
+                        labelStyle: const TextStyle(color: textSecondary),
+                        hintText: 'https://${allowedLinkHosts.first}/acc/...',
+                        hintStyle: TextStyle(
+                          color: textSecondary.withOpacity(0.4),
+                          fontSize: 13,
+                        ),
+                        filled: true,
+                        fillColor: bgDark,
+                        alignLabelWithHint: true,
+                        contentPadding: const EdgeInsets.all(20),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          borderSide: BorderSide.none,
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          borderSide: const BorderSide(
+                            color: primaryAccent,
+                            width: 1.5,
                           ),
                         ),
-                        const SizedBox(height: 6),
-                        Text(
-                          'مدیریت پیوندهای فروشگاه',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: navy.withOpacity(.64),
-                            fontSize: 13,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'پیوندها را وارد کنید (با فاصله یا خط جدید).',
+                      textAlign: TextAlign.right,
+                      style: TextStyle(
+                        color: textSecondary,
+                        fontSize: 12,
+                      ),
+                    ),
+                    const SizedBox(height: 32),
+                    
+                    SizedBox(
+                      height: 56,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: primaryAccent,
+                          foregroundColor: bgDark,
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
                           ),
                         ),
-                        const SizedBox(height: 30),
-                        const Text(
-                          'پیوندها',
-                          textAlign: TextAlign.right,
-                          style: TextStyle(
-                            color: navy,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(height: 9),
-                        TextField(
-                          controller: _linksController,
-                          maxLines: 6,
-                          textDirection: TextDirection.ltr,
-                          textAlign: TextAlign.left,
-                          style: const TextStyle(
-                            color: navy,
-                            fontSize: 13,
-                            height: 1.5,
-                          ),
-                          decoration: InputDecoration(
-                            hintText: 'https://${allowedLinkHosts.first}/... یا ${allowedLinkHosts.last}/...',
-                            hintStyle: TextStyle(
-                              color: navy.withOpacity(.38),
-                              fontSize: 12,
-                            ),
-                            filled: true,
-                            fillColor: Colors.white.withOpacity(.72),
-                            contentPadding: const EdgeInsets.all(16),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(16),
-                              borderSide: BorderSide(
-                                color: navy.withOpacity(.1),
-                              ),
-                            ),
-                            enabledBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(16),
-                              borderSide: BorderSide(
-                                color: navy.withOpacity(.12),
-                              ),
-                            ),
-                            focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(16),
-                              borderSide: const BorderSide(
-                                color: gold,
-                                width: 1.8,
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        Text(
-                          'هر پیوند را در یک خط وارد کنید.',
-                          textAlign: TextAlign.right,
-                          style: TextStyle(
-                            color: navy.withOpacity(.5),
-                            fontSize: 11,
-                          ),
-                        ),
-                        const SizedBox(height: 22),
-                        SizedBox(
-                          height: 54,
-                          child: ElevatedButton.icon(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: navy,
-                              foregroundColor: Colors.white,
-                              elevation: 0,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(16),
-                              ),
-                            ),
-                            onPressed: _processLinks,
-                            icon: const Icon(Icons.arrow_back_rounded, size: 20),
-                            label: const Text(
-                              'ادامه',
+                        onPressed: _processLinks,
+                        child: const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              'شروع پردازش',
                               style: TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w700,
-                                fontFamily: 'Tahoma',
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
                               ),
                             ),
+                            SizedBox(width: 8),
+                            Icon(Icons.rocket_launch_rounded, size: 20),
+                          ],
+                        ),
+                      ),
+                    ),
+                    
+                    if (_statusMessage.isNotEmpty) ...[
+                      const SizedBox(height: 20),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.redAccent.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.redAccent.withOpacity(0.3)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.error_outline, color: Colors.redAccent, size: 20),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                _statusMessage,
+                                textAlign: TextAlign.right,
+                                style: const TextStyle(
+                                  color: Colors.redAccent,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+
+                    // 🔴 بخش کپی‌رایت و تبلیغ کانال تلگرام اضافه شد 🔴
+                    const SizedBox(height: 32),
+                    Divider(color: bgDark.withOpacity(0.8), thickness: 1.5),
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Text(
+                          'ساخته شده توسط ',
+                          textDirection: TextDirection.rtl,
+                          style: TextStyle(
+                            color: textSecondary,
+                            fontSize: 12,
                           ),
                         ),
-                        if (_statusMessage.isNotEmpty) ...[
-                          const SizedBox(height: 15),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 10,
-                            ),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFFBE9E7),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Text(
-                              _statusMessage,
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(
-                                color: Color(0xFFB3261E),
-                                fontSize: 12,
-                                height: 1.4,
-                              ),
-                            ),
+                        const Text(
+                          '@OkalaLink',
+                          style: TextStyle(
+                            color: primaryAccent,
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.5,
                           ),
-                        ],
+                        ),
+                        const SizedBox(width: 6),
+                        Icon(
+                          Icons.telegram,
+                          color: primaryAccent.withOpacity(0.8),
+                          size: 18,
+                        ),
                       ],
                     ),
-                  ),
+                    // 🔴 پایان بخش تبلیغ 🔴
+
+                  ],
                 ),
               ),
             ),
           ),
-        ],
-      ),
-    );
-  }
-}
-
-class _GlowCircle extends StatelessWidget {
-  final double size;
-  final Color color;
-
-  const _GlowCircle({required this.size, required this.color});
-
-  @override
-  Widget build(BuildContext context) {
-    return IgnorePointer(
-      child: Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: color,
         ),
       ),
     );
@@ -383,7 +374,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
   String _loadingMessage = 'در حال آماده‌سازی...';
   
   bool _hasInjectedForCurrentAccount = false; 
-  
   List<dynamic> _currentLocalData = [];
   String? _currentTokenMs;
   String? _currentRefreshToken;
@@ -400,7 +390,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
     setState(() {
       _isLoading = true;
       _hasInjectedForCurrentAccount = false;
-      _loadingMessage = 'در حال آماده‌سازی ${index + 1}...';
+      _loadingMessage = 'پیکربندی اکانت ${index + 1}...';
       _currentIndex = index;
     });
 
@@ -410,7 +400,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
       final response = await http.get(Uri.parse(widget.urls[index]));
       if (response.statusCode != 200) {
-        throw Exception('ارتباط با سرور لینک ناموفق بود.');
+        throw Exception('ارتباط با سرور ناموفق بود.');
       }
 
       final Map<String, dynamic> data = json.decode(response.body);
@@ -420,9 +410,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
         List<dynamic> originsList = data['origins'];
         dynamic matchedOrigin = originsList[0]; 
         for (var o in originsList) {
-          if (o is Map &&
-              o['origin'] != null &&
-              o['origin'].toString().contains(storeHost)) {
+          if (o is Map && o['origin'] != null && o['origin'].toString().contains(storeHost)) {
             matchedOrigin = o;
             break;
           }
@@ -474,7 +462,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
     } catch (e) {
       setState(() {
-        _loadingMessage = 'خطا در بارگذاری اکانت: $e';
+        _loadingMessage = 'خطا در بارگذاری: $e';
       });
     }
   }
@@ -485,8 +473,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('آخرین مورد در حال نمایش است.'),
-          backgroundColor: navy,
+          content: Text('شما در آخرین اکانت هستید.', style: TextStyle(color: bgDark, fontWeight: FontWeight.bold)),
+          backgroundColor: primaryAccent,
+          behavior: SnackBarBehavior.floating,
         ),
       );
     }
@@ -495,102 +484,133 @@ class _BrowserScreenState extends State<BrowserScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: bgDark,
       appBar: AppBar(
         title: Text(
-          'baran link  ·  ${_currentIndex + 1} / ${widget.urls.length}',
+          'مورد ${_currentIndex + 1} از ${widget.urls.length}',
           style: const TextStyle(
-            fontSize: 15,
+            fontSize: 16,
             fontWeight: FontWeight.w700,
-            color: Colors.white,
+            color: textPrimary,
           ),
         ),
-        backgroundColor: navy,
+        backgroundColor: surfaceDark,
         elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.white),
+        iconTheme: const IconThemeData(color: textPrimary),
+        centerTitle: true,
         actions: [
           if (_currentIndex < widget.urls.length - 1)
-            TextButton.icon(
-              onPressed: _nextAccount,
-              icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
-              label: const Text(
-                'بعدی',
-                style: TextStyle(color: Colors.white, fontFamily: 'Tahoma'),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8.0),
+              child: TextButton(
+                onPressed: _nextAccount,
+                style: TextButton.styleFrom(
+                  foregroundColor: primaryAccent,
+                ),
+                child: const Row(
+                  children: [
+                    Text('بعدی', style: TextStyle(fontWeight: FontWeight.bold)),
+                    SizedBox(width: 4),
+                    Icon(Icons.arrow_forward_ios_rounded, size: 14),
+                  ],
+                ),
               ),
             ),
         ],
       ),
       drawer: Drawer(
+        backgroundColor: surfaceDark,
         child: Column(
           children: [
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.only(top: 52, bottom: 24),
-              color: navy,
+              padding: const EdgeInsets.only(top: 60, bottom: 30),
+              decoration: const BoxDecoration(
+                color: bgDark,
+                border: Border(bottom: BorderSide(color: surfaceDark, width: 2)),
+              ),
               child: Column(
                 children: [
                   Container(
-                    width: 64,
-                    height: 64,
-                    padding: const EdgeInsets.all(3),
+                    width: 70,
+                    height: 70,
                     decoration: BoxDecoration(
-                      color: cream,
-                      borderRadius: BorderRadius.circular(18),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: primaryAccent, width: 1.5),
                     ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(15),
+                    child: Padding(
+                      padding: const EdgeInsets.all(10.0),
                       child: Image.asset(
-                        'assets/baran_link_icon.png',
-                        fit: BoxFit.cover,
+                        'assets/nexus_icon.png',
+                        errorBuilder: (context, error, stackTrace) => 
+                            const Icon(Icons.link, color: primaryAccent, size: 30),
                       ),
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  Text(
-                    'baran link',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 19,
-                      fontWeight: FontWeight.w800,
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Nexus Link',
+                    style: TextStyle(
+                      color: textPrimary,
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '${widget.urls.length} پیوند',
-                    style: TextStyle(
-                      color: Colors.white.withOpacity(.68),
-                      fontSize: 12,
+                  const SizedBox(height: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: primaryAccent.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      '${widget.urls.length} پیوند فعال',
+                      style: const TextStyle(
+                        color: primaryAccent,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
                 ],
               ),
             ),
             Expanded(
-              child: ListView.builder(
+              child: ListView.separated(
                 itemCount: widget.urls.length,
+                separatorBuilder: (context, index) => Divider(color: bgDark.withOpacity(0.5), height: 1),
                 itemBuilder: (context, index) {
                   final isActive = index == _currentIndex;
                   return ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor: isActive ? gold : Colors.grey.shade200,
-                      child: Text(
-                        '${index + 1}',
-                        style: TextStyle(
-                          color: isActive ? navy : Colors.black54,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+                    leading: Container(
+                      width: 32,
+                      height: 32,
+                      decoration: BoxDecoration(
+                        color: isActive ? primaryAccent : bgDark,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Center(
+                        child: Text(
+                          '${index + 1}',
+                          style: TextStyle(
+                            color: isActive ? bgDark : textSecondary,
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
                     ),
                     title: Text(
-                      'مورد ${index + 1}',
+                      'حساب کاربری ${index + 1}',
                       style: TextStyle(
-                        color: navy,
+                        color: isActive ? textPrimary : textSecondary,
                         fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
+                        fontSize: 14,
                       ),
                     ),
-                    subtitle: Text(widget.urls[index], maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: Colors.grey)),
                     selected: isActive,
-                    selectedTileColor: const Color(0xFFE9E3D6),
+                    selectedTileColor: primaryAccent.withOpacity(0.05),
                     onTap: () {
                       Navigator.pop(context); 
                       if (!isActive) _loadAccount(index);
@@ -607,7 +627,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
           if (!_isLoading)
             InAppWebView(
               key: _webViewKey, 
-               initialUrlRequest: URLRequest(url: WebUri("https://$storeHost/")),
+              initialUrlRequest: URLRequest(url: WebUri("https://$storeHost/")),
               initialSettings: InAppWebViewSettings(
                 javaScriptEnabled: true,
                 domStorageEnabled: true,
@@ -616,7 +636,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
                 clearSessionCache: true, 
               ),
               onLoadStop: (controller, url) async {
-                
                 if (url != null &&
                     url.host.toLowerCase().contains('okala.com') &&
                     !_hasInjectedForCurrentAccount) {
@@ -668,19 +687,22 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
           if (_isLoading)
             Container(
-              color: Colors.white,
+              color: bgDark,
               child: Center(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const CircularProgressIndicator(color: gold),
-                    const SizedBox(height: 16),
+                    const CircularProgressIndicator(
+                      color: primaryAccent,
+                      strokeWidth: 3,
+                    ),
+                    const SizedBox(height: 24),
                     Text(
                       _loadingMessage,
                       style: const TextStyle(
-                        color: navy,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
+                        color: textSecondary,
+                        fontWeight: FontWeight.w500,
+                        fontSize: 15,
                       ),
                     ),
                   ],
@@ -692,3 +714,4 @@ class _BrowserScreenState extends State<BrowserScreen> {
     );
   }
 }
+
