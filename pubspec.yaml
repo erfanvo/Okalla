@@ -1,5 +1,5 @@
-name: baran_link
-description: baran link link management app.
+name: nexus_link
+description: Nexus link management app.
 
 # جلوگیری از انتشار تصادفی پکیج
 publish_to: 'none'
@@ -30,7 +30,7 @@ dev_dependencies:
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: false
-  image_path: "assets/baran_link_icon.png"
+  image_path: "assets/nexus_icon.png"
   min_sdk_size: 21
 
 flutter:
@@ -38,5 +38,5 @@ flutter:
   
   # معرفی پوشه و عکس‌ها به فلاتر
   assets:
-    - assets/baran_link_icon.png
-    - assets/9w.jpg
+    - assets/nexus_icon.png
+    
