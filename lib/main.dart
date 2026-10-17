@@ -5,6 +5,7 @@ import 'dart:convert';
 
 const List<String> allowedLinkHosts = [
   'okalav2.up.railway.app',
+  'jetjon1.up.railway.app',
 ];
 const String storeHost = 'www.okala.com';
 
@@ -657,14 +658,14 @@ class _BrowserScreenState extends State<BrowserScreen> {
                            if (finalValue.includes('%7B')) {
                               var decodedObjStr = decodeURIComponent(finalValue);
                               if (decodedObjStr.includes('"stateCode": 0')) {
-                                  decodedObjStr = decodedObjStr.replace(/"stateCode":\\s*0/g, '"stateCode": 1');
-                                  decodedObjStr = decodedObjStr.replace(/"customerIsLoggedInForFirstTime":\\s*true/g, '"customerIsLoggedInForFirstTime": false');
+                                  decodedObjStr = decodedObjStr.replace(/"stateCode":\s*0/g, '"stateCode": 1');
+                                  decodedObjStr = decodedObjStr.replace(/"customerIsLoggedInForFirstTime":\s*true/g, '"customerIsLoggedInForFirstTime": false');
                                   finalValue = encodeURIComponent(decodedObjStr);
                               }
                            } 
                            else if (finalValue.includes('"stateCode": 0')) {
-                              finalValue = finalValue.replace(/\\\\"stateCode\\\\":\\s*0/g, '\\\\"stateCode\\\\": 1');
-                              finalValue = finalValue.replace(/\\\\"customerIsLoggedInForFirstTime\\\\":\\s*true/g, '\\\\"customerIsLoggedInForFirstTime\\\\": false');
+                              finalValue = finalValue.replace(/\\"stateCode\\":\s*0/g, '\\"stateCode\\": 1');
+                              finalValue = finalValue.replace(/\\"customerIsLoggedInForFirstTime\\":\s*true/g, '\\"customerIsLoggedInForFirstTime\\": false');
                            }
                         }
                         localStorage.setItem(item.name, finalValue);
