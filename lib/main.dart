@@ -1,6 +1,6 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:collection';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:http/http.dart' as http;
@@ -10,6 +10,7 @@ const List<String> allowedLinkHosts = [
   'jetjon1.up.railway.app',
 ];
 const String storeHost = 'www.okala.com';
+const String bootstrapPath = '/__nexus_init__';
 
 // پالت رنگی (تم تاریک و مدرن)
 const Color bgDark = Color(0xFF12141D);
@@ -82,7 +83,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     if (uri == null) return false;
 
     final host = uri.host.toLowerCase();
-    final bool isAllowed = allowedLinkHosts.any((allowedHost) => host == allowedHost);
+    final bool isAllowed =
+        allowedLinkHosts.any((allowedHost) => host == allowedHost);
 
     return isAllowed &&
         uri.scheme.toLowerCase() == 'https' &&
@@ -190,7 +192,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                               'assets/nexus_icon.png',
                               fit: BoxFit.contain,
                               errorBuilder: (context, error, stackTrace) =>
-                                  const Icon(Icons.link_rounded, size: 40, color: primaryAccent),
+                                  const Icon(Icons.link_rounded,
+                                      size: 40, color: primaryAccent),
                             ),
                           ),
                         ),
@@ -261,10 +264,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                             _linksController.clear();
                             setState(() => _statusMessage = '');
                           },
-                          icon: const Icon(Icons.clear_all, size: 16, color: textSecondary),
+                          icon: const Icon(Icons.clear_all,
+                              size: 16, color: textSecondary),
                           label: const Text(
                             'پاک کردن متن',
-                            style: TextStyle(color: textSecondary, fontSize: 12),
+                            style:
+                                TextStyle(color: textSecondary, fontSize: 12),
                           ),
                         ),
                         const Flexible(
@@ -313,17 +318,23 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       Container(
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
-                          color: (_isWarning ? Colors.redAccent : primaryAccent).withOpacity(0.1),
+                          color: (_isWarning ? Colors.redAccent : primaryAccent)
+                              .withOpacity(0.1),
                           borderRadius: BorderRadius.circular(12),
                           border: Border.all(
-                            color: (_isWarning ? Colors.redAccent : primaryAccent).withOpacity(0.3),
+                            color:
+                                (_isWarning ? Colors.redAccent : primaryAccent)
+                                    .withOpacity(0.3),
                           ),
                         ),
                         child: Row(
                           children: [
                             Icon(
-                              _isWarning ? Icons.error_outline : Icons.check_circle_outline,
-                              color: _isWarning ? Colors.redAccent : primaryAccent,
+                              _isWarning
+                                  ? Icons.error_outline
+                                  : Icons.check_circle_outline,
+                              color:
+                                  _isWarning ? Colors.redAccent : primaryAccent,
                               size: 20,
                             ),
                             const SizedBox(width: 10),
@@ -332,7 +343,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                                 _statusMessage,
                                 textAlign: TextAlign.right,
                                 style: TextStyle(
-                                  color: _isWarning ? Colors.redAccent : primaryAccent,
+                                  color: _isWarning
+                                      ? Colors.redAccent
+                                      : primaryAccent,
                                   fontSize: 13,
                                 ),
                               ),
@@ -399,12 +412,13 @@ class _BrowserScreenState extends State<BrowserScreen> {
   int _currentIndex = 0;
   int _sessionGeneration = 0;
   bool _isLoading = true;
+  bool _isBootstrapping = true;
   bool _hasError = false;
   String _loadingMessage = 'در حال آماده‌سازی...';
   double _progress = 0.0;
 
   String _activeInjectionScript = '';
-  String _activeTargetKey = '';
+  String _activeBootstrapHtml = '';
 
   @override
   void initState() {
@@ -419,7 +433,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
     super.dispose();
   }
 
-  /// پاکسازی کش دیسک و فایل‌های موقت وب‌ویو برای جلوگیری از رسیدن حجم برنامه به 100 مگابایت
+  /// پاکسازی کش دیسک و فایل‌های موقت وب‌ویو
   Future<void> _cleanupWebViewCache({bool showNotice = false}) async {
     try {
       await InAppWebViewController.clearAllCache(includeDiskFiles: true);
@@ -453,88 +467,397 @@ class _BrowserScreenState extends State<BrowserScreen> {
     } catch (_) {}
   }
 
-  /// ساخت اسکریپت تزریق آنی در ابتدای لود صفحه (بدون نیاز به رفرش مجدد و دوبار لود شدن سایت)
+  /// اصلاح فیلدهای وضعیت کاربر برای جلوگیری از خروج خودکار در اوکالا
+  void _normalizeUserMap(Map<String, dynamic> userMap, String? tokenMs) {
+    userMap['customerIsLoggedInForFirstTime'] = false;
+    userMap['state'] = true;
+    if (userMap.containsKey('stateCode')) {
+      userMap['stateCode'] = 1;
+    }
+    if (tokenMs != null && tokenMs.isNotEmpty && userMap.containsKey('token')) {
+      userMap['token'] = tokenMs;
+    }
+  }
+
+  /// نرمال‌سازی مقدار کوکی و localStorage مربوط به user
+  String _normalizeUserValueString(String rawValue, String? tokenMs,
+      {bool forceUrlEncode = true}) {
+    try {
+      final bool wasEncoded =
+          rawValue.contains('%7B') || rawValue.contains('%22');
+      final String decodedStr =
+          wasEncoded ? Uri.decodeComponent(rawValue) : rawValue;
+      final dynamic parsed = jsonDecode(decodedStr);
+      if (parsed is Map<String, dynamic>) {
+        _normalizeUserMap(parsed, tokenMs);
+        final String reEncodedJson = jsonEncode(parsed);
+        return (forceUrlEncode || wasEncoded)
+            ? Uri.encodeComponent(reEncodedJson)
+            : reEncodedJson;
+      }
+    } catch (_) {}
+    return rawValue;
+  }
+
+  /// نرمال‌سازی ساختار persist:root برای هماهنگی کامل Redux Persist با توکن و وضعیت لاگین
+  String _normalizePersistRootString(String rawValue, String? tokenMs) {
+    try {
+      final dynamic outer = jsonDecode(rawValue);
+      if (outer is Map<String, dynamic>) {
+        if (outer['user'] is String) {
+          try {
+            final dynamic userSlice = jsonDecode(outer['user'] as String);
+            if (userSlice is Map<String, dynamic>) {
+              if (userSlice['user'] is Map<String, dynamic>) {
+                final Map<String, dynamic> innerUser =
+                    Map<String, dynamic>.from(userSlice['user'] as Map);
+                _normalizeUserMap(innerUser, tokenMs);
+                if (tokenMs != null && tokenMs.isNotEmpty) {
+                  innerUser['token'] = tokenMs;
+                }
+                userSlice['user'] = innerUser;
+              }
+              outer['user'] = jsonEncode(userSlice);
+            }
+          } catch (_) {}
+        }
+
+        if (outer['eventData'] is String) {
+          try {
+            final dynamic eventSlice = jsonDecode(outer['eventData'] as String);
+            if (eventSlice is Map<String, dynamic>) {
+              eventSlice['isLoggedIn'] = true;
+              outer['eventData'] = jsonEncode(eventSlice);
+            }
+          } catch (_) {}
+        }
+
+        if (outer['_persist'] is String) {
+          try {
+            final dynamic persistSlice =
+                jsonDecode(outer['_persist'] as String);
+            if (persistSlice is Map<String, dynamic>) {
+              persistSlice['rehydrated'] = true;
+              outer['_persist'] = jsonEncode(persistSlice);
+            }
+          } catch (_) {}
+        }
+
+        return jsonEncode(outer);
+      }
+    } catch (_) {}
+    return rawValue;
+  }
+
+  /// ساخت اسکریپت تزریق و محافظت از نشست (جلوگیری از حذف توکن و خروج ناگهانی)
   String _buildFastInjectionScript({
     required String targetKey,
-    required List<dynamic> localData,
+    required List<Map<String, String>> localData,
     required String? tokenMs,
     required String? refreshToken,
+    required String? userCookieValue,
   }) {
-    final String safeJsonItems = jsonEncode(localData).replaceAll('</', '<\\/');
+    final String safeJsonItems =
+        jsonEncode(localData).replaceAll('</', r'<\/');
     final String safeTokenMs = jsonEncode(tokenMs ?? '');
     final String safeRefreshToken = jsonEncode(refreshToken ?? '');
+    final String safeUserCookie = jsonEncode(userCookieValue ?? '');
+    final String safeTargetKey = jsonEncode(targetKey);
 
-    return '''
+    const String template = r'''
       (function() {
         try {
           if (!location.hostname || location.hostname.toLowerCase().indexOf('okala.com') === -1) return;
 
-          // ۱. مسدودسازی Service Worker و حذف کش‌های سنگین PWA (جلوگیری از پر شدن ۱۰۰ مگابایت حافظه)
-          if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.getRegistrations().then(function(regs) {
-              for (var i = 0; i < regs.length; i++) { regs[i].unregister(); }
-            }).catch(function(){});
-            navigator.serviceWorker.register = function() {
-              return Promise.resolve({ unregister: function() { return Promise.resolve(true); } });
-            };
-          }
-          if ('caches' in window) {
-            caches.keys().then(function(names) {
-              for (var i = 0; i < names.length; i++) { caches.delete(names[i]); }
-            }).catch(function(){});
-          }
+          var targetKey = __TARGET_KEY__;
+          var items = __ITEMS_JSON__;
+          var tMs = __TOKEN_MS__;
+          var rTk = __REFRESH_TOKEN__;
+          var uCk = __USER_COOKIE__;
 
-          // ۲. بررسی تزریق یک‌باره برای اکانت فعلی (انجام در همان لود اول بدون رفرش مجدد)
-          var targetKey = '$targetKey';
-          if (sessionStorage.getItem(targetKey) === '1') return;
+          var origSetItem = Storage.prototype.setItem;
+          var origRemoveItem = Storage.prototype.removeItem;
+          var origClear = Storage.prototype.clear;
 
-          localStorage.clear();
-          sessionStorage.clear();
-          sessionStorage.setItem(targetKey, '1');
-
-          var items = $safeJsonItems;
-          if (Array.isArray(items)) {
-            for (var i = 0; i < items.length; i++) {
-              var item = items[i];
-              if (!item || !item.name) continue;
-              var k = String(item.name);
-              var finalValue = item.value != null ? String(item.value) : '';
-
-              if (k === 'user' || k === 'persist:root') {
-                if (finalValue.indexOf('%7B') !== -1) {
-                  try {
-                    var decodedObjStr = decodeURIComponent(finalValue);
-                    if (decodedObjStr.indexOf('"stateCode": 0') !== -1 || decodedObjStr.indexOf('"stateCode":0') !== -1) {
-                      decodedObjStr = decodedObjStr.replace(/"stateCode":\s*0/g, '"stateCode": 1');
-                      decodedObjStr = decodedObjStr.replace(/"customerIsLoggedInForFirstTime":\s*true/g, '"customerIsLoggedInForFirstTime": false');
-                      finalValue = encodeURIComponent(decodedObjStr);
-                    }
-                  } catch (_) {}
-                } else if (finalValue.indexOf('"stateCode": 0') !== -1 || finalValue.indexOf('"stateCode":0') !== -1) {
-                  finalValue = finalValue.replace(/\\"stateCode\\":\s*0/g, '\\"stateCode\\": 1');
-                  finalValue = finalValue.replace(/"stateCode":\s*0/g, '"stateCode": 1');
-                  finalValue = finalValue.replace(/\\"customerIsLoggedInForFirstTime\\":\s*true/g, '\\"customerIsLoggedInForFirstTime\\": false');
-                  finalValue = finalValue.replace(/"customerIsLoggedInForFirstTime":\s*true/g, '"customerIsLoggedInForFirstTime": false');
-                }
-              }
-              localStorage.setItem(k, finalValue);
+          function fixUserStatuses(str) {
+            if (typeof str !== 'string' || str.indexOf('customerIsLoggedInForFirstTime') === -1) return str;
+            var isUrlEncoded = str.indexOf('%7B') !== -1 || str.indexOf('%22') !== -1;
+            try {
+              var raw = isUrlEncoded ? decodeURIComponent(str) : str;
+              raw = raw.replace(/("customerIsLoggedInForFirstTime"\s*:\s*)true/g, '$1false');
+              raw = raw.replace(/(\\"customerIsLoggedInForFirstTime\\"\s*:\s*)true/g, '$1false');
+              raw = raw.replace(/("state"\s*:\s*)false/g, '$1true');
+              raw = raw.replace(/(\\"state\\"\s*:\s*)false/g, '$1true');
+              raw = raw.replace(/("stateCode"\s*:\s*)0/g, '$11');
+              raw = raw.replace(/(\\"stateCode\\"\s*:\s*)0/g, '$11');
+              return isUrlEncoded ? encodeURIComponent(raw) : raw;
+            } catch (_) {
+              return str;
             }
           }
 
-          var tMs = $safeTokenMs;
-          var rTk = $safeRefreshToken;
-          if (tMs !== '') {
-            localStorage.setItem('tokenMS', tMs);
-            localStorage.setItem('token', tMs);
+          // ۱. تزریق اولیه و یک‌باره برای اکانت فعلی
+          var alreadyInjected = false;
+          try {
+            alreadyInjected = (localStorage.getItem('__nx_active_key') === targetKey);
+          } catch (_) {}
+
+          if (!alreadyInjected) {
+            try {
+              origClear.call(localStorage);
+              origClear.call(sessionStorage);
+            } catch (_) {}
+
+            if (Array.isArray(items)) {
+              for (var i = 0; i < items.length; i++) {
+                var item = items[i];
+                if (!item || !item.name) continue;
+                var k = String(item.name);
+                var v = item.value != null ? String(item.value) : '';
+                if (k === 'user' || k === 'persist:root') {
+                  v = fixUserStatuses(v);
+                }
+                origSetItem.call(localStorage, k, v);
+              }
+            }
+
+            if (tMs !== '') {
+              origSetItem.call(localStorage, 'tokenMS', tMs);
+              origSetItem.call(localStorage, 'token', tMs);
+            }
+            if (rTk !== '') {
+              origSetItem.call(localStorage, 'refresh_token', rTk);
+            }
+            if (uCk !== '' && !localStorage.getItem('user')) {
+              origSetItem.call(localStorage, 'user', fixUserStatuses(uCk));
+            }
+
+            origSetItem.call(localStorage, '__nx_active_key', targetKey);
+            origSetItem.call(sessionStorage, targetKey, '1');
+
+            // ثبت کوکی‌های سمت کلاینت روی دامنه www.okala.com
+            if (tMs !== '') {
+              document.cookie = 'tokenMS=' + tMs + '; path=/; max-age=7776000; SameSite=Lax';
+              document.cookie = 'token=' + tMs + '; path=/; max-age=7776000; SameSite=Lax';
+            }
+            if (uCk !== '') {
+              document.cookie = 'user=' + fixUserStatuses(uCk) + '; path=/; max-age=7776000; SameSite=Lax';
+            }
           }
-          if (rTk !== '') {
-            localStorage.setItem('refresh_token', rTk);
+
+          // ۲. محافظت در برابر حذف خودکار توکن‌ها و اطلاعات کاربری توسط اسکریپت‌های سایت
+          if (!window.__nxStorageProtected) {
+            window.__nxStorageProtected = true;
+
+            var savedPersistRoot = localStorage.getItem('persist:root');
+            var savedUser = localStorage.getItem('user');
+
+            Storage.prototype.setItem = function(key, value) {
+              var k = String(key);
+              var v = String(value);
+
+              if (this === localStorage) {
+                if (k === 'token' || k === 'tokenMS') {
+                  if (!v || v === 'null' || v === 'undefined' || v.length < 20) {
+                    return;
+                  }
+                  tMs = v;
+                } else if (k === 'user') {
+                  if (!v || v === 'null' || v === 'undefined' || v === '{}' || v === '%7B%7D') {
+                    return;
+                  }
+                  v = fixUserStatuses(v);
+                  savedUser = v;
+                } else if (k === 'persist:root') {
+                  v = fixUserStatuses(v);
+                  try {
+                    var parsedRoot = JSON.parse(v);
+                    if (parsedRoot && typeof parsedRoot === 'object') {
+                      var shouldRestoreUser = false;
+                      if (!parsedRoot.user) {
+                        shouldRestoreUser = true;
+                      } else {
+                        var parsedUserSlice = JSON.parse(parsedRoot.user);
+                        if (!parsedUserSlice || !parsedUserSlice.user || !parsedUserSlice.user.id) {
+                          shouldRestoreUser = true;
+                        } else {
+                          parsedUserSlice.user.customerIsLoggedInForFirstTime = false;
+                          parsedUserSlice.user.state = true;
+                          if ('stateCode' in parsedUserSlice.user) {
+                            parsedUserSlice.user.stateCode = 1;
+                          }
+                          if (tMs && !parsedUserSlice.user.token) {
+                            parsedUserSlice.user.token = tMs;
+                          }
+                          parsedRoot.user = JSON.stringify(parsedUserSlice);
+                        }
+                      }
+                      if (shouldRestoreUser && savedPersistRoot) {
+                        var prevRoot = JSON.parse(savedPersistRoot);
+                        if (prevRoot && prevRoot.user) {
+                          parsedRoot.user = prevRoot.user;
+                        }
+                      }
+                      if (parsedRoot.eventData) {
+                        var ed = JSON.parse(parsedRoot.eventData);
+                        if (ed && typeof ed === 'object') {
+                          ed.isLoggedIn = true;
+                          parsedRoot.eventData = JSON.stringify(ed);
+                        }
+                      }
+                      v = JSON.stringify(parsedRoot);
+                      savedPersistRoot = v;
+                    }
+                  } catch (_) {}
+                }
+              }
+              return origSetItem.call(this, k, v);
+            };
+
+            Storage.prototype.removeItem = function(key) {
+              var k = String(key);
+              if (this === localStorage && (k === 'token' || k === 'tokenMS' || k === 'user' || k === 'refresh_token' || k === 'persist:root' || k === '__nx_active_key')) {
+                return;
+              }
+              return origRemoveItem.call(this, key);
+            };
+
+            Storage.prototype.clear = function() {
+              if (this === localStorage) {
+                return;
+              }
+              return origClear.call(this);
+            };
+
+            // محافظت از حذف کوکی‌های احراز هویت در document.cookie
+            try {
+              var cookieDesc = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie') ||
+                               Object.getOwnPropertyDescriptor(HTMLDocument.prototype, 'cookie');
+              if (cookieDesc && cookieDesc.set && cookieDesc.get) {
+                Object.defineProperty(document, 'cookie', {
+                  configurable: true,
+                  get: function() {
+                    return cookieDesc.get.call(this);
+                  },
+                  set: function(val) {
+                    var str = String(val).trim();
+                    var eqIdx = str.indexOf('=');
+                    if (eqIdx !== -1) {
+                      var cName = str.substring(0, eqIdx).trim();
+                      var rest = str.substring(eqIdx + 1);
+                      var semiIdx = rest.indexOf(';');
+                      var cVal = (semiIdx !== -1 ? rest.substring(0, semiIdx) : rest).trim();
+                      var lowerStr = str.toLowerCase();
+                      var isDelete = cVal === '' || cVal === 'null' || cVal === 'undefined' ||
+                                     lowerStr.indexOf('max-age=0') !== -1 ||
+                                     lowerStr.indexOf('max-age=-') !== -1 ||
+                                     lowerStr.indexOf('1970') !== -1;
+
+                      if (cName === 'token' || cName === 'tokenMS' || cName === 'user' || cName === 'refresh_token') {
+                        if (isDelete) {
+                          return;
+                        }
+                        if (cName === 'user') {
+                          str = fixUserStatuses(str);
+                        }
+                      }
+                    }
+                    return cookieDesc.set.call(this, str);
+                  }
+                });
+              }
+            } catch (_) {}
+
+            // اصلاح پاسخ‌های API که فیلد customerIsLoggedInForFirstTime: true یا state: false برمی‌گردانند
+            if (window.fetch) {
+              var origFetch = window.fetch;
+              window.fetch = function(input, init) {
+                return origFetch.apply(this, arguments).then(function(response) {
+                  try {
+                    var cType = response.headers && response.headers.get ? (response.headers.get('content-type') || '') : '';
+                    if (cType.indexOf('application/json') !== -1) {
+                      var clone = response.clone();
+                      return clone.text().then(function(txt) {
+                        if (txt && txt.indexOf('customerIsLoggedInForFirstTime') !== -1) {
+                          var fixedTxt = fixUserStatuses(txt);
+                          return new Response(fixedTxt, {
+                            status: response.status,
+                            statusText: response.statusText,
+                            headers: response.headers
+                          });
+                        }
+                        return response;
+                      }).catch(function() { return response; });
+                    }
+                  } catch (_) {}
+                  return response;
+                });
+              };
+            }
+
+            if (window.XMLHttpRequest) {
+              var origOpen = XMLHttpRequest.prototype.open;
+              var origSend = XMLHttpRequest.prototype.send;
+              XMLHttpRequest.prototype.open = function(method, url) {
+                this.__nxUrl = String(url || '');
+                return origOpen.apply(this, arguments);
+              };
+              XMLHttpRequest.prototype.send = function() {
+                this.addEventListener('readystatechange', function() {
+                  if (this.readyState === 4 && (this.responseType === '' || this.responseType === 'text')) {
+                    try {
+                      var txt = this.responseText;
+                      if (txt && txt.indexOf('customerIsLoggedInForFirstTime') !== -1) {
+                        var fixedTxt = fixUserStatuses(txt);
+                        Object.defineProperty(this, 'responseText', { configurable: true, get: function() { return fixedTxt; } });
+                        Object.defineProperty(this, 'response', { configurable: true, get: function() { return fixedTxt; } });
+                      }
+                    } catch (_) {}
+                  }
+                });
+                return origSend.apply(this, arguments);
+              };
+            }
           }
         } catch (e) {
           console.error('Fast Injection Error:', e);
         }
       })();
     ''';
+
+    return template
+        .replaceAll('__TARGET_KEY__', safeTargetKey)
+        .replaceAll('__ITEMS_JSON__', safeJsonItems)
+        .replaceAll('__TOKEN_MS__', safeTokenMs)
+        .replaceAll('__REFRESH_TOKEN__', safeRefreshToken)
+        .replaceAll('__USER_COOKIE__', safeUserCookie);
+  }
+
+  /// ساخت صفحه بوت‌استرپ محلی روی دامنه اوکالا برای تزریق ۱۰۰٪ تضمینی پیش از لود سایت
+  String _buildBootstrapHtml(String injectionScript) {
+    return '''
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background-color: #12141D;
+    }
+  </style>
+  <script>
+    $injectionScript
+    window.location.replace('https://$storeHost/');
+  </script>
+</head>
+<body></body>
+</html>
+''';
   }
 
   Future<void> _loadAccount(int index) async {
@@ -545,6 +868,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
     setState(() {
       _isLoading = true;
+      _isBootstrapping = true;
       _hasError = false;
       _progress = 0.1;
       _loadingMessage = 'در حال دریافت اطلاعات حساب ${index + 1}...';
@@ -552,20 +876,28 @@ class _BrowserScreenState extends State<BrowserScreen> {
     });
 
     try {
-      // ۱. پاکسازی کش دیسک و کوکی‌های قبلی به صورت موازی
-      final CookieManager cookieManager = CookieManager.instance();
-      await Future.wait([
-        cookieManager.deleteAllCookies(),
-        InAppWebViewController.clearAllCache(includeDiskFiles: true),
-      ]);
+      // ۱. توقف کامل صفحه قبلی قبل از تغییر کوکی‌ها (جلوگیری از تداخل نشست قبلی با نشست جدید)
+      if (_webViewController != null) {
+        await _webViewController!.stopLoading();
+        await _webViewController!.removeAllUserScripts();
+        await _webViewController!.loadUrl(
+          urlRequest: URLRequest(url: WebUri('about:blank')),
+        );
+      }
 
-      // ۲. دریافت اطلاعات اکانت با محدودیت زمانی ۱۵ ثانیه (جلوگیری از هنگ کردن برنامه)
-      final response = await _httpClient
-          .get(Uri.parse(widget.urls[index]))
-          .timeout(const Duration(seconds: 15));
+      final CookieManager cookieManager = CookieManager.instance();
+
+      // ۲. پاکسازی کوکی‌های قبلی و دریافت اطلاعات اکانت جدید به صورت موازی
+      final results = await Future.wait([
+        cookieManager.deleteAllCookies(),
+        _httpClient
+            .get(Uri.parse(widget.urls[index]))
+            .timeout(const Duration(seconds: 15)),
+      ]);
 
       if (!mounted || currentGen != _sessionGeneration) return;
 
+      final http.Response response = results[1] as http.Response;
       if (response.statusCode != 200) {
         throw Exception('پاسخ نامعتبر از سرور (کد ${response.statusCode})');
       }
@@ -576,69 +908,107 @@ class _BrowserScreenState extends State<BrowserScreen> {
       }
       final Map<String, dynamic> data = decoded;
 
-      List<dynamic> localData = [];
+      List<dynamic> rawLocalData = [];
       if (data['origins'] is List && (data['origins'] as List).isNotEmpty) {
         final List<dynamic> originsList = data['origins'];
         dynamic matchedOrigin = originsList.first;
         for (var o in originsList) {
-          if (o is Map && o['origin'] != null && o['origin'].toString().contains(storeHost)) {
+          if (o is Map &&
+              o['origin'] != null &&
+              o['origin'].toString().contains(storeHost)) {
             matchedOrigin = o;
             break;
           }
         }
         if (matchedOrigin is Map && matchedOrigin['localStorage'] is List) {
-          localData = matchedOrigin['localStorage'];
+          rawLocalData = matchedOrigin['localStorage'];
         }
       }
 
       String? tMs;
       String? rTk;
+      String? rawUserCookie;
 
-      final List<dynamic> cookies = (data['cookies'] is List) ? data['cookies'] : [];
+      final List<dynamic> cookies =
+          (data['cookies'] is List) ? data['cookies'] : [];
       for (var c in cookies) {
         if (c is Map) {
           final String? name = c['name']?.toString();
           final String? val = c['value']?.toString();
-          if (name == 'tokenMS' && val != null) tMs = val;
-          if (name == 'refresh_token' && val != null) rTk = val;
+          if (val == null || val.isEmpty) continue;
+          if (name == 'tokenMS') tMs = val;
+          if (name == 'token' && (tMs == null || tMs.isEmpty)) tMs = val;
+          if (name == 'refresh_token') rTk = val;
+          if (name == 'user') rawUserCookie = val;
         }
       }
 
-      if (tMs == null || rTk == null) {
-        for (var item in localData) {
-          if (item is Map) {
-            final String? name = item['name']?.toString();
-            final String? val = item['value']?.toString();
-            if (name == 'tokenMS' && tMs == null && val != null) tMs = val;
-            if (name == 'refresh_token' && rTk == null && val != null) rTk = val;
+      for (var item in rawLocalData) {
+        if (item is Map) {
+          final String? name = item['name']?.toString();
+          final String? val = item['value']?.toString();
+          if (val == null || val.isEmpty) continue;
+          if (name == 'tokenMS' && (tMs == null || tMs.isEmpty)) tMs = val;
+          if (name == 'token' && (tMs == null || tMs.isEmpty)) tMs = val;
+          if (name == 'refresh_token' && (rTk == null || rTk.isEmpty)) {
+            rTk = val;
+          }
+          if (name == 'user' &&
+              (rawUserCookie == null || rawUserCookie.isEmpty)) {
+            rawUserCookie = val;
           }
         }
       }
 
-      // ۳. ثبت موازی تمام کوکی‌ها با Future.wait (افزایش چشمگیر سرعت آماده‌سازی)
-      final WebUri storeUri = WebUri('https://$storeHost');
+      final String? normalizedUserCookie = rawUserCookie != null
+          ? _normalizeUserValueString(rawUserCookie, tMs, forceUrlEncode: true)
+          : null;
+
+      // آماده‌سازی و اصلاح تمام مقادیر localStorage در سمت دارت
+      final List<Map<String, String>> normalizedLocalData = [];
+      bool hasCityId = false;
+      bool hasCityName = false;
+      bool hasUser = false;
+
+      for (var item in rawLocalData) {
+        if (item is! Map) continue;
+        final String? name = item['name']?.toString();
+        if (name == null || name.isEmpty) continue;
+        String val = item['value']?.toString() ?? '';
+
+        if (name == 'user') {
+          val = _normalizeUserValueString(val, tMs, forceUrlEncode: true);
+          hasUser = true;
+        } else if (name == 'persist:root') {
+          val = _normalizePersistRootString(val, tMs);
+        } else if (name == 'token' || name == 'tokenMS') {
+          if (tMs != null && tMs.isNotEmpty) val = tMs;
+        } else if (name == 'city_id') {
+          hasCityId = true;
+        } else if (name == 'city_name') {
+          hasCityName = true;
+        }
+
+        normalizedLocalData.add({'name': name, 'value': val});
+      }
+
+      if (!hasUser && normalizedUserCookie != null) {
+        normalizedLocalData
+            .add({'name': 'user', 'value': normalizedUserCookie});
+      }
+      if (!hasCityId) {
+        normalizedLocalData.add({'name': 'city_id', 'value': '129'});
+      }
+      if (!hasCityName) {
+        normalizedLocalData.add({'name': 'city_name', 'value': 'تهران'});
+      }
+
+      // ۳. ثبت دقیق کوکی‌ها مطابق ساختار استاندارد مرورگر با تاریخ انقضای معتبر
+      final WebUri storeUri = WebUri('https://$storeHost/');
+      final int futureExpiresMs =
+          DateTime.now().add(const Duration(days: 90)).millisecondsSinceEpoch;
       final List<Future<void>> cookieFutures = [];
 
-      if (tMs != null && tMs.isNotEmpty) {
-        cookieFutures.add(cookieManager.setCookie(
-          url: storeUri,
-          name: 'tokenMS',
-          value: tMs,
-          domain: '.okala.com',
-          path: '/',
-          isSecure: true,
-          sameSite: HTTPCookieSameSitePolicy.NONE,
-        ));
-        cookieFutures.add(cookieManager.setCookie(
-          url: storeUri,
-          name: 'token',
-          value: tMs,
-          domain: '.okala.com',
-          path: '/',
-          isSecure: true,
-          sameSite: HTTPCookieSameSitePolicy.NONE,
-        ));
-      }
       if (rTk != null && rTk.isNotEmpty) {
         cookieFutures.add(cookieManager.setCookie(
           url: storeUri,
@@ -646,8 +1016,46 @@ class _BrowserScreenState extends State<BrowserScreen> {
           value: rTk,
           domain: '.okala.com',
           path: '/',
+          expiresDate: futureExpiresMs,
+          isHttpOnly: true,
           isSecure: true,
           sameSite: HTTPCookieSameSitePolicy.NONE,
+        ));
+      }
+
+      if (tMs != null && tMs.isNotEmpty) {
+        cookieFutures.add(cookieManager.setCookie(
+          url: storeUri,
+          name: 'tokenMS',
+          value: tMs,
+          path: '/',
+          expiresDate: futureExpiresMs,
+          isHttpOnly: false,
+          isSecure: false,
+          sameSite: HTTPCookieSameSitePolicy.LAX,
+        ));
+        cookieFutures.add(cookieManager.setCookie(
+          url: storeUri,
+          name: 'token',
+          value: tMs,
+          path: '/',
+          expiresDate: futureExpiresMs,
+          isHttpOnly: false,
+          isSecure: false,
+          sameSite: HTTPCookieSameSitePolicy.LAX,
+        ));
+      }
+
+      if (normalizedUserCookie != null && normalizedUserCookie.isNotEmpty) {
+        cookieFutures.add(cookieManager.setCookie(
+          url: storeUri,
+          name: 'user',
+          value: normalizedUserCookie,
+          path: '/',
+          expiresDate: futureExpiresMs,
+          isHttpOnly: false,
+          isSecure: false,
+          sameSite: HTTPCookieSameSitePolicy.LAX,
         ));
       }
 
@@ -656,34 +1064,44 @@ class _BrowserScreenState extends State<BrowserScreen> {
         final String? cName = c['name']?.toString();
         final String? cVal = c['value']?.toString();
         if (cName == null || cName.isEmpty || cVal == null) continue;
-        if (cName != 'tokenMS' && cName != 'refresh_token' && cName != 'token') {
-          final String rawDomain = c['domain']?.toString() ?? '.okala.com';
-          final String domain = rawDomain.startsWith('.') ? rawDomain : '.$rawDomain';
-          cookieFutures.add(cookieManager.setCookie(
-            url: storeUri,
-            name: cName,
-            value: cVal,
-            domain: domain,
-            path: c['path']?.toString() ?? '/',
-            isSecure: true,
-            sameSite: HTTPCookieSameSitePolicy.NONE,
-          ));
+        if (cName == 'tokenMS' ||
+            cName == 'refresh_token' ||
+            cName == 'token' ||
+            cName == 'user') {
+          continue;
         }
+        final String rawDomain = c['domain']?.toString() ?? '';
+        final bool isDomainCookie = rawDomain.startsWith('.');
+        cookieFutures.add(cookieManager.setCookie(
+          url: storeUri,
+          name: cName,
+          value: cVal,
+          domain: isDomainCookie ? rawDomain : null,
+          path: c['path']?.toString() ?? '/',
+          expiresDate: futureExpiresMs,
+          isHttpOnly: c['httpOnly'] == true,
+          isSecure: c['secure'] == true,
+          sameSite: isDomainCookie
+              ? HTTPCookieSameSitePolicy.NONE
+              : HTTPCookieSameSitePolicy.LAX,
+        ));
       }
 
       await Future.wait(cookieFutures);
       if (!mounted || currentGen != _sessionGeneration) return;
 
-      // ۴. آماده‌سازی اسکریپت تزریق در لحظه شروع لود سند (AT_DOCUMENT_START)
+      // ۴. آماده‌سازی اسکریپت تزریق و صفحه بوت‌استرپ
       final String script = _buildFastInjectionScript(
         targetKey: targetKey,
-        localData: localData,
+        localData: normalizedLocalData,
         tokenMs: tMs,
         refreshToken: rTk,
+        userCookieValue: normalizedUserCookie,
       );
+      final String bootstrapHtml = _buildBootstrapHtml(script);
 
       _activeInjectionScript = script;
-      _activeTargetKey = targetKey;
+      _activeBootstrapHtml = bootstrapHtml;
 
       setState(() {
         _loadingMessage = 'در حال ورود به فروشگاه...';
@@ -691,29 +1109,34 @@ class _BrowserScreenState extends State<BrowserScreen> {
       });
 
       if (_webViewController != null) {
-        await _webViewController!.removeAllUserScripts();
         await _webViewController!.addUserScript(
           userScript: UserScript(
             source: script,
             injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+            forMainFrameOnly: true,
           ),
         );
-        // اگر از قبل روی دامنه اوکالا هستیم، بلافاصله حافظه را آپدیت کن تا نیاز به رفرش نباشد
-        await _webViewController!.evaluateJavascript(source: script);
-        await _webViewController!.loadUrl(
-          urlRequest: URLRequest(url: WebUri('https://$storeHost/')),
+        await _webViewController!.loadData(
+          data: bootstrapHtml,
+          mimeType: 'text/html',
+          encoding: 'utf-8',
+          baseUrl: WebUri('https://$storeHost$bootstrapPath'),
+          historyUrl: WebUri('https://$storeHost/'),
         );
       }
     } on TimeoutException {
-      if (!mounted) return;
+      if (!mounted || currentGen != _sessionGeneration) return;
       setState(() {
         _hasError = true;
-        _loadingMessage = 'مهلت اتصال به سرور به پایان رسید. اینترنت خود را بررسی کنید.';
+        _isLoading = false;
+        _loadingMessage =
+            'مهلت اتصال به سرور به پایان رسید. اینترنت خود را بررسی کنید.';
       });
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || currentGen != _sessionGeneration) return;
       setState(() {
         _hasError = true;
+        _isLoading = false;
         _loadingMessage = 'خطا در بارگذاری حساب: $e';
       });
     }
@@ -748,9 +1171,18 @@ class _BrowserScreenState extends State<BrowserScreen> {
       canPop: false,
       onPopInvoked: (didPop) async {
         if (didPop) return;
-        if (_webViewController != null && await _webViewController!.canGoBack()) {
-          await _webViewController!.goBack();
-        } else if (context.mounted) {
+        if (_webViewController != null &&
+            await _webViewController!.canGoBack()) {
+          final WebUri? currentUrl = await _webViewController!.getUrl();
+          if (currentUrl != null &&
+              currentUrl.path != '/' &&
+              currentUrl.path.isNotEmpty &&
+              !currentUrl.path.contains(bootstrapPath)) {
+            await _webViewController!.goBack();
+            return;
+          }
+        }
+        if (context.mounted) {
           Navigator.of(context).pop();
         }
       },
@@ -773,18 +1205,21 @@ class _BrowserScreenState extends State<BrowserScreen> {
             IconButton(
               tooltip: 'پاکسازی کش و حافظه',
               onPressed: () => _cleanupWebViewCache(showNotice: true),
-              icon: const Icon(Icons.cleaning_services_rounded, size: 20, color: textSecondary),
+              icon: const Icon(Icons.cleaning_services_rounded,
+                  size: 20, color: textSecondary),
             ),
             IconButton(
               tooltip: 'بارگذاری مجدد این حساب',
               onPressed: () => _loadAccount(_currentIndex),
-              icon: const Icon(Icons.refresh_rounded, size: 22, color: textSecondary),
+              icon: const Icon(Icons.refresh_rounded,
+                  size: 22, color: textSecondary),
             ),
             if (_currentIndex > 0)
               IconButton(
                 tooltip: 'حساب قبلی',
                 onPressed: _prevAccount,
-                icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18, color: primaryAccent),
+                icon: const Icon(Icons.arrow_back_ios_new_rounded,
+                    size: 18, color: primaryAccent),
               ),
             if (_currentIndex < widget.urls.length - 1)
               Padding(
@@ -797,7 +1232,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   ),
                   child: const Row(
                     children: [
-                      Text('بعدی', style: TextStyle(fontWeight: FontWeight.bold)),
+                      Text('بعدی',
+                          style: TextStyle(fontWeight: FontWeight.bold)),
                       SizedBox(width: 4),
                       Icon(Icons.arrow_forward_ios_rounded, size: 14),
                     ],
@@ -826,7 +1262,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
                 padding: const EdgeInsets.only(top: 56, bottom: 24),
                 decoration: const BoxDecoration(
                   color: bgDark,
-                  border: Border(bottom: BorderSide(color: surfaceDark, width: 2)),
+                  border:
+                      Border(bottom: BorderSide(color: surfaceDark, width: 2)),
                 ),
                 child: Column(
                   children: [
@@ -842,7 +1279,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
                         child: Image.asset(
                           'assets/nexus_icon.png',
                           errorBuilder: (context, error, stackTrace) =>
-                              const Icon(Icons.link, color: primaryAccent, size: 30),
+                              const Icon(Icons.link,
+                                  color: primaryAccent, size: 30),
                         ),
                       ),
                     ),
@@ -857,7 +1295,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
                     ),
                     const SizedBox(height: 6),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 4),
                       decoration: BoxDecoration(
                         color: primaryAccent.withOpacity(0.1),
                         borderRadius: BorderRadius.circular(20),
@@ -882,7 +1321,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   itemBuilder: (context, index) {
                     final isActive = index == _currentIndex;
                     return ListTile(
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 4),
                       leading: Container(
                         width: 32,
                         height: 32,
@@ -905,7 +1345,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
                         'حساب کاربری ${index + 1}',
                         style: TextStyle(
                           color: isActive ? textPrimary : textSecondary,
-                          fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
+                          fontWeight:
+                              isActive ? FontWeight.bold : FontWeight.normal,
                           fontSize: 14,
                         ),
                       ),
@@ -921,10 +1362,14 @@ class _BrowserScreenState extends State<BrowserScreen> {
               ),
               const Divider(height: 1, color: bgDark),
               ListTile(
-                leading: const Icon(Icons.exit_to_app_rounded, color: Colors.redAccent),
+                leading: const Icon(Icons.exit_to_app_rounded,
+                    color: Colors.redAccent),
                 title: const Text(
                   'بازگشت به صفحه اصلی',
-                  style: TextStyle(color: Colors.redAccent, fontSize: 14, fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                      color: Colors.redAccent,
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold),
                 ),
                 onTap: () {
                   Navigator.pop(context);
@@ -936,18 +1381,17 @@ class _BrowserScreenState extends State<BrowserScreen> {
         ),
         body: Stack(
           children: [
-            // نگه داشتن یک نمونه ثابت از InAppWebView برای جلوگیری از کرش و نشت رم
             InAppWebView(
               initialUrlRequest: URLRequest(url: WebUri('about:blank')),
               initialUserScripts: UnmodifiableListView<UserScript>([]),
               initialSettings: InAppWebViewSettings(
                 javaScriptEnabled: true,
                 domStorageEnabled: true,
-                databaseEnabled: false,
-                cacheEnabled: false,
-                cacheMode: CacheMode.LOAD_NO_CACHE,
-                clearCache: true,
-                clearSessionCache: true,
+                databaseEnabled: true,
+                cacheEnabled: true,
+                cacheMode: CacheMode.LOAD_DEFAULT,
+                clearCache: false,
+                clearSessionCache: false,
                 thirdPartyCookiesEnabled: true,
                 useHybridComposition: true,
                 supportZoom: false,
@@ -956,25 +1400,40 @@ class _BrowserScreenState extends State<BrowserScreen> {
               ),
               onWebViewCreated: (controller) async {
                 _webViewController = controller;
-                if (_activeInjectionScript.isNotEmpty) {
+                if (_activeInjectionScript.isNotEmpty &&
+                    _activeBootstrapHtml.isNotEmpty) {
                   await controller.addUserScript(
                     userScript: UserScript(
                       source: _activeInjectionScript,
                       injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+                      forMainFrameOnly: true,
                     ),
                   );
-                  await controller.loadUrl(
-                    urlRequest: URLRequest(url: WebUri('https://$storeHost/')),
+                  await controller.loadData(
+                    data: _activeBootstrapHtml,
+                    mimeType: 'text/html',
+                    encoding: 'utf-8',
+                    baseUrl: WebUri('https://$storeHost$bootstrapPath'),
+                    historyUrl: WebUri('https://$storeHost/'),
                   );
                 }
               },
+              onLoadStart: (controller, url) {
+                if (!mounted || url == null) return;
+                final String urlStr = url.toString();
+                if (url.host.toLowerCase().contains('okala.com') &&
+                    !urlStr.contains(bootstrapPath)) {
+                  setState(() {
+                    _isBootstrapping = false;
+                  });
+                }
+              },
               onProgressChanged: (controller, progress) {
-                if (!mounted) return;
+                if (!mounted || _isBootstrapping) return;
                 setState(() {
                   _progress = progress / 100.0;
                 });
-                // به محض اینکه ۸۰ درصد صفحه رندر شد، لایه لودینگ را بردار تا کاربر معطل نشود
-                if (progress >= 80 && _isLoading && !_hasError) {
+                if (progress >= 85 && _isLoading && !_hasError) {
                   setState(() {
                     _isLoading = false;
                   });
@@ -982,37 +1441,28 @@ class _BrowserScreenState extends State<BrowserScreen> {
               },
               onLoadStop: (controller, url) async {
                 if (!mounted || url == null) return;
+                final String urlStr = url.toString();
                 final String host = url.host.toLowerCase();
-                if (host.contains('okala.com')) {
-                  // بررسی پشتیبان: اگر در برخی گوشی‌های قدیمی AT_DOCUMENT_START اجرا نشده بود، اینجا تزریق کن
-                  if (_activeInjectionScript.isNotEmpty && _activeTargetKey.isNotEmpty) {
-                    final dynamic injected = await controller.evaluateJavascript(
-                      source: "sessionStorage.getItem('$_activeTargetKey')",
-                    );
-                    if (injected?.toString() != '1') {
-                      await controller.evaluateJavascript(source: _activeInjectionScript);
-                      await controller.loadUrl(
-                        urlRequest: URLRequest(url: WebUri('https://$storeHost/')),
-                      );
-                      return;
-                    }
-                  }
-                  if (mounted && _isLoading) {
+                if (host.contains('okala.com') &&
+                    !urlStr.contains(bootstrapPath)) {
+                  if (mounted && (_isLoading || _isBootstrapping)) {
                     setState(() {
+                      _isBootstrapping = false;
                       _isLoading = false;
                     });
                   }
                 }
               },
               onReceivedError: (controller, request, error) {
-                if (request.isForMainFrame == true && mounted) {
+                if (request.isForMainFrame == true &&
+                    !_isBootstrapping &&
+                    mounted) {
                   setState(() {
                     _isLoading = false;
                   });
                 }
               },
             ),
-
             if (_isLoading || _hasError)
               Container(
                 color: bgDark,
