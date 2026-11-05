@@ -1,26 +1,34 @@
 
 import 'dart:async';
-import 'dart:collection';
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
-const List<String> allowedLinkHosts = [
-  'okalav2.up.railway.app',
-  'jetjon1.up.railway.app',
-];
+const Color bgDark = Color(0xFF090D16);
+const Color cardDark = Color(0xFF131B2E);
+const Color primaryAccent = Color(0xFF00E5FF);
+const Color secondaryAccent = Color(0xFF1E88E5);
+const Color textPrimary = Color(0xFFF8FAFC);
+const Color textSecondary = Color(0xFF94A3B8);
+
 const String storeHost = 'www.okala.com';
+const String storeUrl = 'https://www.okala.com/stores';
 
-// پالت رنگی (تم تاریک و مدرن)
-const Color bgDark = Color(0xFF12141D);
-const Color surfaceDark = Color(0xFF1E212D);
-const Color primaryAccent = Color(0xFF00D09E);
-const Color textPrimary = Color(0xFFF3F4F6);
-const Color textSecondary = Color(0xFF9CA3AF);
+const String customUserAgent =
+    'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: Brightness.light,
+      systemNavigationBarColor: bgDark,
+      systemNavigationBarIconBrightness: Brightness.light,
+    ),
+  );
   runApp(const NexusLinkApp());
 }
 
@@ -30,32 +38,79 @@ class NexusLinkApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      debugShowCheckedModeBanner: false,
       title: 'Nexus Link',
-      theme: ThemeData(
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData.dark().copyWith(
+        scaffoldBackgroundColor: bgDark,
+        primaryColor: primaryAccent,
         colorScheme: const ColorScheme.dark(
           primary: primaryAccent,
-          surface: surfaceDark,
+          secondary: secondaryAccent,
+          surface: cardDark,
         ),
-        scaffoldBackgroundColor: bgDark,
-        useMaterial3: true,
       ),
-      home: const WorkspaceScreen(),
+      home: const InputScreen(),
     );
   }
 }
 
-class WorkspaceScreen extends StatefulWidget {
-  const WorkspaceScreen({super.key});
+class InputScreen extends StatefulWidget {
+  const InputScreen({super.key});
 
   @override
-  State<WorkspaceScreen> createState() => _WorkspaceScreenState();
+  State<InputScreen> createState() => _InputScreenState();
 }
 
-class _WorkspaceScreenState extends State<WorkspaceScreen> {
+class _InputScreenState extends State<InputScreen> {
   final TextEditingController _linksController = TextEditingController();
   String _statusMessage = '';
   bool _isWarning = false;
+
+  Future<void> _pasteFromClipboard() async {
+    final ClipboardData? data = await Clipboard.getData(Clipboard.kTextPlain);
+    if (data != null && data.text != null) {
+      setState(() {
+        final currentText = _linksController.text;
+        _linksController.text = currentText.isEmpty
+            ? data.text!
+            : '$currentText\n${data.text!}';
+        _statusMessage = '';
+      });
+    }
+  }
+
+  void _processLinks() {
+    final rawText = _linksController.text.trim();
+    if (rawText.isEmpty) {
+      setState(() {
+        _statusMessage = 'لطفاً حداقل یک پیوند معتبر وارد نمایید.';
+        _isWarning = true;
+      });
+      return;
+    }
+
+    final RegExp urlRegex = RegExp(r'(https?://[^\s]+)');
+    final Iterable<RegExpMatch> matches = urlRegex.allMatches(rawText);
+    final List<String> urls = matches.map((m) => m.group(0)!).toList();
+
+    if (urls.isEmpty) {
+      setState(() {
+        _statusMessage = 'هیچ پیوند معتبری (شروع با http/https) یافت نشد.';
+        _isWarning = true;
+      });
+      return;
+    }
+
+    Navigator.of(context).pushReplacement(
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            BrowserScreen(urls: urls),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return FadeTransition(opacity: animation, child: child);
+        },
+      ),
+    );
+  }
 
   @override
   void dispose() {
@@ -63,105 +118,40 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     super.dispose();
   }
 
-  String _normaliseLink(String value) {
-    String cleaned = value
-        .replaceAll(RegExp(r'[\u200B-\u200D\uFEFF]'), '')
-        .trim()
-        .replaceFirst(RegExp(r'[،,؛;.!؟<>()\[\]]+$'), '')
-        .replaceFirst(RegExp(r'^[،,؛;.!؟<>()\[\]]+'), '');
-
-    if (cleaned.toLowerCase().startsWith('http://')) {
-      cleaned = 'https://${cleaned.substring(7)}';
-    } else if (!cleaned.toLowerCase().startsWith('https://')) {
-      cleaned = 'https://$cleaned';
-    }
-    return Uri.encodeFull(cleaned);
-  }
-
-  bool _isAllowedLink(String value) {
-    final uri = Uri.tryParse(_normaliseLink(value));
-    if (uri == null) return false;
-
-    final host = uri.host.toLowerCase();
-    final bool isAllowed =
-        allowedLinkHosts.any((allowedHost) => host == allowedHost);
-
-    return isAllowed &&
-        uri.scheme.toLowerCase() == 'https' &&
-        uri.userInfo.isEmpty;
-  }
-
-  void _processLinks() {
-    final text = _linksController.text;
-    if (text.trim().isEmpty) {
-      setState(() {
-        _isWarning = true;
-        _statusMessage = 'لطفاً پیوندها را وارد کنید.';
-      });
-      return;
-    }
-
-    final tokens = text.split(RegExp(r'\s+'));
-    final List<String> extractedUrls = [];
-    int invalidCount = 0;
-
-    for (var token in tokens) {
-      token = token.trim();
-      if (token.isEmpty) continue;
-
-      if (_isAllowedLink(token)) {
-        final normalized = _normaliseLink(token);
-        if (!extractedUrls.contains(normalized)) {
-          extractedUrls.add(normalized);
-        }
-      } else {
-        invalidCount++;
-      }
-    }
-
-    if (extractedUrls.isEmpty) {
-      setState(() {
-        _isWarning = true;
-        _statusMessage =
-            'هیچ پیوند معتبری از دامنه ${allowedLinkHosts.join(" یا ")} یافت نشد.';
-      });
-      return;
-    }
-
-    setState(() {
-      _isWarning = false;
-      _statusMessage = invalidCount > 0
-          ? '$invalidCount مورد غیرمعتبر نادیده گرفته شد. ${extractedUrls.length} پیوند معتبر آماده پردازش است.'
-          : '';
-    });
-
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => BrowserScreen(urls: extractedUrls),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 450),
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: RadialGradient(
+            center: Alignment.topRight,
+            radius: 1.5,
+            colors: [Color(0xFF162238), bgDark],
+          ),
+        ),
+        child: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
               child: Container(
-                padding: const EdgeInsets.all(32),
+                constraints: const BoxConstraints(maxWidth: 480),
+                padding: const EdgeInsets.all(28.0),
                 decoration: BoxDecoration(
-                  color: surfaceDark,
-                  borderRadius: BorderRadius.circular(24),
+                  color: cardDark.withOpacity(0.85),
+                  borderRadius: BorderRadius.circular(28),
+                  border: Border.all(
+                      color: Colors.white.withOpacity(0.08), width: 1.5),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withOpacity(0.4),
-                      blurRadius: 20,
-                      offset: const Offset(0, 10),
+                      color: Colors.black.withOpacity(0.5),
+                      blurRadius: 30,
+                      offset: const Offset(0, 15),
+                    ),
+                    BoxShadow(
+                      color: primaryAccent.withOpacity(0.05),
+                      blurRadius: 40,
+                      spreadRadius: 2,
                     ),
                   ],
                 ),
@@ -169,82 +159,105 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Center(
-                      child: Container(
-                        width: 80,
-                        height: 80,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: bgDark,
-                          border: Border.all(color: primaryAccent, width: 2),
-                          boxShadow: [
-                            BoxShadow(
-                              color: primaryAccent.withOpacity(0.2),
-                              blurRadius: 15,
-                              spreadRadius: 2,
-                            ),
-                          ],
-                        ),
-                        child: ClipOval(
-                          child: Padding(
-                            padding: const EdgeInsets.all(12.0),
-                            child: Image.asset(
-                              'assets/nexus_icon.png',
-                              fit: BoxFit.contain,
-                              errorBuilder: (context, error, stackTrace) =>
-                                  const Icon(Icons.link_rounded,
-                                      size: 40, color: primaryAccent),
-                            ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: primaryAccent.withOpacity(0.1),
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                                color: primaryAccent.withOpacity(0.3)),
+                          ),
+                          child: const Icon(
+                            Icons.hub_rounded,
+                            color: primaryAccent,
+                            size: 32,
                           ),
                         ),
-                      ),
+                      ],
                     ),
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 16),
                     const Text(
-                      'Nexus Link',
+                      'نکسوس لینک',
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                        color: textPrimary,
                         fontSize: 26,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 1.2,
+                        fontWeight: FontWeight.w900,
+                        color: textPrimary,
+                        letterSpacing: 0.5,
                       ),
                     ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 6),
                     const Text(
-                      'سیستم مدیریت سریع و کم‌حجم پیوندها',
+                      'مدیریت هوشمند و فوق‌سریع نشست‌های کاربری',
                       textAlign: TextAlign.center,
                       style: TextStyle(
+                        fontSize: 13,
                         color: textSecondary,
-                        fontSize: 14,
                       ),
                     ),
-                    const SizedBox(height: 36),
+                    const SizedBox(height: 28),
+                    Directionality(
+                      textDirection: TextDirection.rtl,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'لیست پیوندها:',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                              color: textPrimary,
+                            ),
+                          ),
+                          TextButton.icon(
+                            onPressed: _pasteFromClipboard,
+                            icon: const Icon(Icons.content_paste_rounded,
+                                size: 16, color: primaryAccent),
+                            label: const Text(
+                              'چسباندن از حافظه',
+                              style: TextStyle(
+                                  color: primaryAccent, fontSize: 12),
+                            ),
+                            style: TextButton.styleFrom(
+                              backgroundColor: primaryAccent.withOpacity(0.1),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12)),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 6),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 10),
                     TextField(
                       controller: _linksController,
-                      maxLines: 7,
+                      maxLines: 6,
                       textDirection: TextDirection.ltr,
-                      textAlign: TextAlign.left,
                       style: const TextStyle(
                         color: textPrimary,
-                        fontSize: 14,
-                        height: 1.6,
+                        fontSize: 13,
+                        fontFamily: 'monospace',
                       ),
                       decoration: InputDecoration(
-                        labelText: 'لیست پیوندها',
-                        labelStyle: const TextStyle(color: textSecondary),
-                        hintText: 'https://${allowedLinkHosts.first}/acc/...',
+                        hintText:
+                            'https://example.com/acc/1\nhttps://example.com/acc/2',
                         hintStyle: TextStyle(
-                          color: textSecondary.withOpacity(0.4),
-                          fontSize: 13,
-                        ),
+                            color: textSecondary.withOpacity(0.4)),
                         filled: true,
-                        fillColor: bgDark,
-                        alignLabelWithHint: true,
-                        contentPadding: const EdgeInsets.all(20),
+                        fillColor: bgDark.withOpacity(0.6),
+                        contentPadding: const EdgeInsets.all(16),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(16),
                           borderSide: BorderSide.none,
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          borderSide: BorderSide(
+                              color: Colors.white.withOpacity(0.05)),
                         ),
                         focusedBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(16),
@@ -406,6 +419,8 @@ class BrowserScreen extends StatefulWidget {
 }
 
 class _BrowserScreenState extends State<BrowserScreen> {
+  static int _globalSessionCounter = 0;
+
   final http.Client _httpClient = http.Client();
   InAppWebViewController? _webViewController;
 
@@ -466,6 +481,27 @@ class _BrowserScreenState extends State<BrowserScreen> {
     } catch (_) {}
   }
 
+  /// تبدیل اعداد فارسی و عربی به انگلیسی
+  String _toEnglishDigits(String input) {
+    const persian = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+    const arabic = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+    String out = input;
+    for (int i = 0; i < 10; i++) {
+      out = out.replaceAll(persian[i], i.toString());
+      out = out.replaceAll(arabic[i], i.toString());
+    }
+    return out;
+  }
+
+  /// پارس عدد صحیح مثبت (> 0)
+  int _parsePositiveInt(dynamic val) {
+    if (val == null) return 0;
+    if (val is int) return val > 0 ? val : 0;
+    final String cleaned = _toEnglishDigits(val.toString()).trim();
+    final int parsed = int.tryParse(cleaned) ?? 0;
+    return parsed > 0 ? parsed : 0;
+  }
+
   /// استخراج Payload از توکن JWT
   Map<String, dynamic> _decodeJwtPayload(String? token) {
     if (token == null || token.isEmpty || !token.contains('.')) return {};
@@ -480,24 +516,80 @@ class _BrowserScreenState extends State<BrowserScreen> {
     return {};
   }
 
+  /// بررسی وجود کلیم‌های Voyager در توکن JWT
+  bool _hasVoyagerClaims(String? token) {
+    final Map<String, dynamic> p = _decodeJwtPayload(token);
+    if (p.isEmpty) return false;
+    return p.containsKey('cerberusId') ||
+        p.containsKey('userId') ||
+        p.containsKey('alternativeCustomerId') ||
+        p.containsKey('tenant');
+  }
+
+  /// ارتقای توکن معمولی به توکن کامل Voyager از طریق customer_token_exchange_grant_type (مطابق ماژول 18726 اوکالا)
+  Future<String?> _exchangeForVoyagerToken(String token) async {
+    try {
+      final http.Response response = await _httpClient
+          .post(
+            Uri.parse('https://apigateway.okala.com/api/v1/accounts/tokens'),
+            headers: {
+              'accept': 'application/json, text/plain, */*',
+              'source': 'okala',
+              'ui-version': '2.0',
+              'origin': 'https://www.okala.com',
+              'content-type': 'application/x-www-form-urlencoded',
+              'advertising_id': '',
+            },
+            body: {
+              'grant_type': 'customer_token_exchange_grant_type',
+              'client_id': 'customer_token_exchange_id',
+              'client_name': 'customer_token_exchange_name',
+              'token': token,
+            },
+          )
+          .timeout(const Duration(seconds: 4));
+
+      if (response.statusCode == 200) {
+        final dynamic bodyJson = jsonDecode(utf8.decode(response.bodyBytes));
+        if (bodyJson is Map) {
+          final String? exchanged = bodyJson['access_token']?.toString() ??
+              (bodyJson['data'] is Map
+                  ? bodyJson['data']['access_token']?.toString()
+                  : null);
+          if (exchanged != null && exchanged.length > 20) {
+            return exchanged;
+          }
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
   /// تلاش برای رفرش مستقیم توکن از سرور اوکالا (مطابق منطق ربات Main1.py)
   /// اگر رفرش‌توکن منقضی شده باشد (کد 400/401)، آن را حذف می‌کند تا کوکی منقضی به BFF اوکالا ارسال نشود.
   Future<Map<String, String?>> _tryRenewTokenIfPossible(
       String? accessToken, String? refreshToken) async {
+    String? cleanAccess = accessToken?.trim();
+    if (cleanAccess != null &&
+        cleanAccess.toLowerCase().startsWith('bearer ')) {
+      cleanAccess = cleanAccess.substring(7).trim();
+    }
+
     if (refreshToken == null || refreshToken.trim().isEmpty) {
+      if (cleanAccess != null &&
+          cleanAccess.isNotEmpty &&
+          !_hasVoyagerClaims(cleanAccess)) {
+        final String? exchanged = await _exchangeForVoyagerToken(cleanAccess);
+        if (exchanged != null) cleanAccess = exchanged;
+      }
       return {
-        'access_token': accessToken,
+        'access_token': cleanAccess,
         'refresh_token': null,
         'refresh_valid': 'false',
       };
     }
 
     final String cleanRefresh = refreshToken.trim();
-    String? cleanAccess = accessToken?.trim();
-    if (cleanAccess != null &&
-        cleanAccess.toLowerCase().startsWith('bearer ')) {
-      cleanAccess = cleanAccess.substring(7).trim();
-    }
 
     final Map<String, String> baseHeaders = {
       'accept': 'application/json, text/plain, */*',
@@ -546,9 +638,25 @@ class _BrowserScreenState extends State<BrowserScreen> {
       if (response.statusCode == 200) {
         final dynamic bodyJson = jsonDecode(utf8.decode(response.bodyBytes));
         if (bodyJson is Map) {
-          final String? newAcc = bodyJson['access_token']?.toString();
+          String? newAcc = bodyJson['access_token']?.toString();
           final String? newRef = bodyJson['refresh_token']?.toString();
           if (newAcc != null && newAcc.isNotEmpty) {
+            if (!_hasVoyagerClaims(newAcc)) {
+              final String? exchanged = await _exchangeForVoyagerToken(newAcc);
+              if (exchanged != null && _hasVoyagerClaims(exchanged)) {
+                newAcc = exchanged;
+              } else if (cleanAccess != null &&
+                  _hasVoyagerClaims(cleanAccess)) {
+                final Map<String, dynamic> oldJwt =
+                    _decodeJwtPayload(cleanAccess);
+                final int oldExp = _parsePositiveInt(oldJwt['exp']);
+                final int nowSec =
+                    DateTime.now().millisecondsSinceEpoch ~/ 1000;
+                if (oldExp > nowSec + 120) {
+                  newAcc = cleanAccess;
+                }
+              }
+            }
             return {
               'access_token': newAcc,
               'refresh_token':
@@ -559,154 +667,381 @@ class _BrowserScreenState extends State<BrowserScreen> {
         }
       }
 
-      // اگر رفرش‌توکن منقضی یا نامعتبر است (مثلاً 400 یا 401)، نباید کوکی refresh_token ست شود
+      // اگر رفرش‌توکن منقضی یا نامعتبر است، ولی توکن فعلی نیاز به ارتقای Voyager دارد
+      if (cleanAccess != null &&
+          cleanAccess.isNotEmpty &&
+          !_hasVoyagerClaims(cleanAccess)) {
+        final String? exchanged = await _exchangeForVoyagerToken(cleanAccess);
+        if (exchanged != null) cleanAccess = exchanged;
+      }
+
       return {
-        'access_token': accessToken,
+        'access_token': cleanAccess,
         'refresh_token': null,
         'refresh_valid': 'false',
       };
     } catch (_) {
-      // در صورت خطای شبکه هم کوکی رفرش‌توکن مشکوک را ارسال نمی‌کنیم تا توکن اصلی سالم بماند
       return {
-        'access_token': accessToken,
+        'access_token': cleanAccess,
         'refresh_token': null,
         'refresh_valid': 'false',
       };
     }
   }
 
-  /// تکمیل و اصلاح تمام فیلدهای آبجکت user مطابق استاندارد ربات و سایت اوکالا
-  void _normalizeUserMap(Map<String, dynamic> userMap, String? tokenMs) {
+  /// دریافت لیست واقعی آدرس‌های کاربر از سرور اوکالا برای جلوگیری از ریدایرکت به صفحه بدون آدرس و تکمیل شناسه مشتری
+  Future<Map<String, dynamic>?> _fetchUserAddressesFromApi(
+      String? tokenMs, int customerId) async {
+    if (tokenMs == null || tokenMs.isEmpty) return null;
+    final Map<String, String> headers = {
+      'Accept': 'application/json, text/plain, */*',
+      'Authorization': 'Bearer $tokenMs',
+      'X-Skip-Authorization': 'false',
+      'source': 'okala',
+      'ui-version': '2.0',
+      'Origin': 'https://www.okala.com',
+      'Referer': 'https://www.okala.com/',
+    };
+
+    try {
+      final http.Response resp = await _httpClient
+          .get(
+            Uri.parse(
+                'https://apigateway.okala.com/api/v1/accounts/userprofile/getcustomeraddresseswithpaging?pageIndex=1&pageSize=15'),
+            headers: headers,
+          )
+          .timeout(const Duration(seconds: 4));
+
+      if (resp.statusCode == 200) {
+        final dynamic decoded = jsonDecode(utf8.decode(resp.bodyBytes));
+        if (decoded is Map<String, dynamic>) {
+          final dynamic dataNode = decoded['data'];
+          if (dataNode is Map<String, dynamic> &&
+              dataNode['customerAddressResponseItems'] is List) {
+            final List<dynamic> items =
+                dataNode['customerAddressResponseItems'] as List<dynamic>;
+            if (items.isNotEmpty) {
+              bool hasDef = false;
+              for (final item in items) {
+                if (item is Map && item['isDefault'] == true) {
+                  hasDef = true;
+                  break;
+                }
+              }
+              if (!hasDef && items.first is Map) {
+                (items.first as Map)['isDefault'] = true;
+              }
+              final int totalCnt = _parsePositiveInt(dataNode['totalCount']);
+              if (totalCnt < items.length) {
+                dataNode['totalCount'] = items.length;
+              }
+              decoded['success'] = true;
+              decoded['hasValidationError'] = false;
+              return decoded;
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
+    if (customerId > 0) {
+      try {
+        final http.Response resp2 = await _httpClient
+            .get(
+              Uri.parse(
+                  'https://apigateway.okala.com/api/voyager/CustomerAddress/CustomerAddressForReact?customerId=$customerId'),
+              headers: headers,
+            )
+            .timeout(const Duration(seconds: 4));
+
+        if (resp2.statusCode == 200) {
+          final dynamic decoded2 = jsonDecode(utf8.decode(resp2.bodyBytes));
+          if (decoded2 is Map<String, dynamic> && decoded2['data'] is List) {
+            final List<dynamic> items = decoded2['data'] as List<dynamic>;
+            if (items.isNotEmpty) {
+              bool hasDef = false;
+              for (final item in items) {
+                if (item is Map && item['isDefault'] == true) {
+                  hasDef = true;
+                  break;
+                }
+              }
+              if (!hasDef && items.first is Map) {
+                (items.first as Map)['isDefault'] = true;
+              }
+              return {
+                'success': true,
+                'hasValidationError': false,
+                'message': null,
+                'data': {
+                  'customerAddressResponseItems': items,
+                  'hasNextPage': false,
+                  'hasPreviousPage': false,
+                  'pageIndex': 1,
+                  'pageSize': 15,
+                  'totalCount': items.length,
+                  'totalPages': 1,
+                },
+                'errorCode': null,
+              };
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    return null;
+  }
+
+  /// تکمیل و اصلاح تمام فیلدهای آبجکت user با اولویت کلیم‌های JWT (جلوگیری از باگ id=0 و عدم تطابق customerId)
+  void _normalizeUserMap(Map<String, dynamic> userMap, String? tokenMs,
+      {Map<String, dynamic>? addressResponse}) {
     final Map<String, dynamic> jwtData = _decodeJwtPayload(tokenMs);
 
-    final dynamic rawId =
-        userMap['id'] ?? jwtData['userId'] ?? jwtData['sub'] ?? 0;
-    final int parsedId = int.tryParse(rawId.toString()) ?? 0;
+    Map<String, dynamic>? firstAddr;
+    if (addressResponse != null &&
+        addressResponse['data'] is Map &&
+        (addressResponse['data']['customerAddressResponseItems'] is List) &&
+        (addressResponse['data']['customerAddressResponseItems'] as List)
+            .isNotEmpty) {
+      final dynamic fa =
+          (addressResponse['data']['customerAddressResponseItems'] as List)
+              .first;
+      if (fa is Map<String, dynamic>) {
+        firstAddr = fa;
+      }
+    }
+
+    // ۱. استخراج شناسه عددی مشتری (id) با اولویت توکن JWT (چون در لینک‌های ربات گاهی id=0 است)
+    int parsedId = _parsePositiveInt(jwtData['userId']);
+    if (parsedId == 0) {
+      parsedId = _parsePositiveInt(jwtData['alternativeCustomerId']);
+    }
+    if (parsedId == 0) {
+      parsedId = _parsePositiveInt(jwtData['sub']);
+    }
+    if (parsedId == 0 && firstAddr != null) {
+      parsedId = _parsePositiveInt(firstAddr['customerId']);
+    }
+    if (parsedId == 0) {
+      parsedId = _parsePositiveInt(userMap['id']);
+    }
+    if (parsedId == 0) {
+      parsedId = _parsePositiveInt(userMap['alternativeCustomerId']);
+    }
     if (parsedId > 0) {
       userMap['id'] = parsedId;
     }
 
-    final String altId = (userMap['alternativeId']?.toString() ?? '').isNotEmpty
-        ? userMap['alternativeId'].toString()
-        : (jwtData['cerberusId']?.toString() ?? '');
-    if (altId.isNotEmpty) {
-      userMap['alternativeId'] = altId;
+    // ۲. استخراج شناسه альтернаتیو عددی مشتری (alternativeCustomerId)
+    int parsedAltCustId = _parsePositiveInt(jwtData['alternativeCustomerId']);
+    if (parsedAltCustId == 0) {
+      parsedAltCustId = parsedId;
     }
-
-    final dynamic rawAltCustId = userMap['alternativeCustomerId'] ??
-        jwtData['alternativeCustomerId'] ??
-        parsedId;
-    final int parsedAltCustId =
-        int.tryParse(rawAltCustId.toString()) ?? parsedId;
+    if (parsedAltCustId == 0) {
+      parsedAltCustId = _parsePositiveInt(userMap['alternativeCustomerId']);
+    }
     if (parsedAltCustId > 0) {
       userMap['alternativeCustomerId'] = parsedAltCustId;
     }
 
-    final String mobile = (userMap['mobilePhone']?.toString() ?? '').isNotEmpty
-        ? userMap['mobilePhone'].toString()
-        : (jwtData['username']?.toString() ??
-            jwtData['userName']?.toString() ??
-            '');
-    if (mobile.isNotEmpty) {
-      userMap['mobilePhone'] = mobile;
-      userMap['userName'] =
-          (userMap['userName']?.toString() ?? '').isNotEmpty
-              ? userMap['userName'].toString()
-              : mobile;
+    // ۳. استخراج شناسه UUID (alternativeId / cerberusId) با اولویت JWT
+    String altId = (jwtData['cerberusId'] ?? jwtData['CerberusId'] ?? '')
+        .toString()
+        .trim();
+    if (altId.isEmpty && firstAddr != null) {
+      altId = (firstAddr['cerberusId'] ?? '').toString().trim();
+    }
+    if (altId.isEmpty) {
+      final String subStr = (jwtData['sub'] ?? '').toString().trim();
+      if (subStr.contains('-')) altId = subStr;
+    }
+    if (altId.isEmpty) {
+      altId = (userMap['alternativeId'] ?? '').toString().trim();
+    }
+    if (altId.isNotEmpty) {
+      userMap['alternativeId'] = altId;
     }
 
-    final String firstName = userMap['firstName']?.toString().trim() ?? '';
-    final String lastName = userMap['lastName']?.toString().trim() ?? '';
+    // ۴. استخراج شماره موبایل با اولویت JWT
+    String mobile = _toEnglishDigits((jwtData['mobilePhone'] ??
+                jwtData['username'] ??
+                jwtData['userName'] ??
+                '')
+            .toString())
+        .trim();
+    if (mobile.isEmpty) {
+      mobile = _toEnglishDigits(
+              (userMap['mobilePhone'] ?? userMap['userName'] ?? '').toString())
+          .trim();
+    }
+    if (mobile.isNotEmpty) {
+      userMap['mobilePhone'] = mobile;
+      userMap['userName'] = mobile;
+    }
+
+    // ۵. نام و نام خانوادگی
+    String firstName = userMap['firstName']?.toString().trim() ?? '';
+    String lastName = userMap['lastName']?.toString().trim() ?? '';
+    if ((firstName.isEmpty || firstName == 'کاربر') && firstAddr != null) {
+      final String af = firstAddr['firstName']?.toString().trim() ?? '';
+      if (af.isNotEmpty) firstName = af;
+    }
+    if ((lastName.isEmpty || lastName == 'اکالا') && firstAddr != null) {
+      final String al = firstAddr['lastName']?.toString().trim() ?? '';
+      if (al.isNotEmpty) lastName = al;
+    }
     userMap['firstName'] = firstName.isEmpty ? 'کاربر' : firstName;
     userMap['lastName'] = lastName.isEmpty ? 'اکالا' : lastName;
 
     userMap['birthDate'] = userMap['birthDate']?.toString() ?? '';
-    final int birthEpoch =
-        int.tryParse(userMap['birthDateEpoch']?.toString() ?? '0') ?? 0;
+    final int birthEpoch = _parsePositiveInt(userMap['birthDateEpoch']);
     userMap['birthDateEpoch'] = birthEpoch > 0 ? birthEpoch : 1005683400;
-    userMap['genderCode'] = userMap['genderCode'] ?? 1;
+    userMap['genderCode'] = _parsePositiveInt(userMap['genderCode']) > 0
+        ? _parsePositiveInt(userMap['genderCode'])
+        : 1;
     userMap['emailAddress'] = userMap['emailAddress']?.toString() ?? '';
     userMap['customerIsLoggedInForFirstTime'] = false;
     userMap['state'] = true;
     userMap['stateCode'] = 1;
-    userMap['hasAddress'] = userMap['hasAddress'] ?? false;
+    userMap['hasAddress'] =
+        firstAddr != null ? true : (userMap['hasAddress'] ?? false);
 
     if (tokenMs != null && tokenMs.isNotEmpty && userMap.containsKey('token')) {
       userMap['token'] = tokenMs;
     }
   }
 
-  /// نرمال‌سازی مقدار user (با پشتیبانی از خروجی URL-Encoded یا JSON خام)
-  String _normalizeUserValueString(String rawValue, String? tokenMs,
-      {required bool urlEncodeOutput}) {
-    try {
-      final bool wasEncoded =
-          rawValue.contains('%7B') || rawValue.contains('%22');
-      final String decodedStr =
-          wasEncoded ? Uri.decodeComponent(rawValue) : rawValue;
-      final dynamic parsed = jsonDecode(decodedStr);
-      if (parsed is Map<String, dynamic>) {
-        _normalizeUserMap(parsed, tokenMs);
-        final String reEncodedJson = jsonEncode(parsed);
-        return urlEncodeOutput
-            ? Uri.encodeComponent(reEncodedJson)
-            : reEncodedJson;
-      }
-    } catch (_) {}
-    return rawValue;
+  /// ساخت رشته JSON مخصوص استور Zustand (کلید localStorage['user'] در ماژول 37645 اوکالا)
+  String _buildZustandUserStoreJson(
+      Map<String, dynamic> cleanUserMap, String? tokenMs, String? refreshToken) {
+    final Map<String, dynamic> userWithToken =
+        Map<String, dynamic>.from(cleanUserMap);
+    if (tokenMs != null && tokenMs.isNotEmpty) {
+      userWithToken['token'] = tokenMs;
+    }
+    final int expireTime =
+        (DateTime.now().millisecondsSinceEpoch ~/ 1000) + 86400;
+    return jsonEncode({
+      'state': {
+        'user': userWithToken,
+        'expireTime': expireTime,
+        'refreshToken': refreshToken ?? '',
+      },
+      'version': 0,
+    });
   }
 
-  /// نرمال‌سازی ساختار persist:root برای هماهنگی کامل Redux Persist با توکن و وضعیت لاگین
-  String _normalizePersistRootString(String rawValue, String? tokenMs) {
-    try {
-      final dynamic outer = jsonDecode(rawValue);
-      if (outer is Map<String, dynamic>) {
-        if (outer['user'] is String) {
-          try {
-            final dynamic userSlice = jsonDecode(outer['user'] as String);
-            if (userSlice is Map<String, dynamic>) {
-              if (userSlice['user'] is Map<String, dynamic>) {
-                final Map<String, dynamic> innerUser =
-                    Map<String, dynamic>.from(userSlice['user'] as Map);
-                _normalizeUserMap(innerUser, tokenMs);
-                if (tokenMs != null && tokenMs.isNotEmpty) {
-                  innerUser['token'] = tokenMs;
-                }
-                userSlice['user'] = innerUser;
-              }
-              outer['user'] = jsonEncode(userSlice);
-            }
-          } catch (_) {}
-        }
+  /// نرمال‌سازی ساختار persist:root برای هماهنگی کامل با آبجکت user و توکن فعلی
+  String _normalizePersistRootString(
+      String? rawValue, Map<String, dynamic> cleanUserMap, String? tokenMs,
+      {Map<String, dynamic>? addressResponse}) {
+    final Map<String, dynamic> userWithToken =
+        Map<String, dynamic>.from(cleanUserMap);
+    if (tokenMs != null && tokenMs.isNotEmpty) {
+      userWithToken['token'] = tokenMs;
+    }
 
-        if (outer['eventData'] is String) {
-          try {
-            final dynamic eventSlice = jsonDecode(outer['eventData'] as String);
-            if (eventSlice is Map<String, dynamic>) {
-              eventSlice['isLoggedIn'] = true;
-              outer['eventData'] = jsonEncode(eventSlice);
-            }
-          } catch (_) {}
-        }
+    int cityId = 129;
+    String cityName = 'تهران';
+    double lat = 35.69976003841564;
+    double lng = 51.33808390275898;
 
-        if (outer['_persist'] is String) {
-          try {
-            final dynamic persistSlice =
-                jsonDecode(outer['_persist'] as String);
-            if (persistSlice is Map<String, dynamic>) {
-              persistSlice['rehydrated'] = true;
-              outer['_persist'] = jsonEncode(persistSlice);
-            }
-          } catch (_) {}
+    if (addressResponse != null &&
+        addressResponse['data'] is Map &&
+        (addressResponse['data']['customerAddressResponseItems'] is List) &&
+        (addressResponse['data']['customerAddressResponseItems'] as List)
+            .isNotEmpty) {
+      final dynamic first =
+          (addressResponse['data']['customerAddressResponseItems'] as List)
+              .first;
+      if (first is Map) {
+        final int cid = _parsePositiveInt(first['cityId']);
+        if (cid > 0) cityId = cid;
+        final String cname = first['cityName']?.toString().trim() ?? '';
+        if (cname.isNotEmpty) cityName = cname;
+        final double? flat = double.tryParse(first['lat']?.toString() ?? '');
+        final double? flng = double.tryParse(first['lng']?.toString() ?? '');
+        if (flat != null && flng != null && flat > 0 && flng > 0) {
+          lat = flat;
+          lng = flng;
         }
-
-        return jsonEncode(outer);
       }
-    } catch (_) {}
-    return rawValue;
+    }
+
+    Map<String, dynamic> outer = {};
+    if (rawValue != null && rawValue.isNotEmpty) {
+      try {
+        final dynamic decoded = jsonDecode(rawValue);
+        if (decoded is Map<String, dynamic>) {
+          outer = decoded;
+        }
+      } catch (_) {}
+    }
+
+    outer['user'] = jsonEncode({
+      'user': userWithToken,
+      'discountCode': null,
+    });
+
+    if (outer['cart'] is! String) {
+      outer['cart'] = jsonEncode({
+        'cartData': [],
+        'totalCartsCount': 0,
+        'showDrawer': false,
+        'cartTotalPrice': 0,
+      });
+    }
+
+    outer['mapInfo'] = jsonEncode({
+      'defaultViewPort': {
+        'latitude': lat,
+        'longitude': lng,
+        'id': cityId,
+        'name': cityName,
+      },
+      'viewport': {
+        'latitude': lat,
+        'longitude': lng,
+      },
+      'discovery': {},
+      'searchCity': '',
+      'searchLocation': '',
+      'filteredCities': [],
+      'searchLocationResult': [],
+      'selectedCity': {
+        'id': cityId,
+        'name': cityName,
+        'lat': lat,
+        'lng': lng,
+      },
+      'mapCityName': cityName,
+      'showSearchCityResult': false,
+      'showSearchLocationResult': false,
+      'mapIsTouched': false,
+      'eventStartTime': 0,
+      'eventStartTimeForEditAddress': 0,
+      'zoomMeasure': 15,
+      'mapPlatform': 'ParsiMap',
+    });
+
+    outer['eventData'] = jsonEncode({
+      'isLoggedIn': true,
+      'platform': 'web',
+      'viewedLayersCount': 0,
+      'activeDiscountCodesCount': 0,
+      'sessionLayersViewedCount': 0,
+    });
+
+    outer['_persist'] = jsonEncode({
+      'version': -1,
+      'rehydrated': true,
+    });
+
+    return jsonEncode(outer);
   }
 
-  /// ساخت اسکریپت جامع تزریق، محافظت از BFF (/api/bff/v1/stores) و جلوگیری از لاگ‌اوت اکانت‌ها
+  /// ساخت اسکریپت جامع تزریق، مدیریت Zustand/Redux، اصلاح ثبت آدرس و محافظت از نشست
   String _buildFastInjectionScript({
     required String targetKey,
     required List<Map<String, String>> localData,
@@ -714,6 +1049,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
     required String? refreshToken,
     required String? userCookieValue,
     required String? userPlainJson,
+    required String? zustandUserJson,
+    required Map<String, dynamic>? initialAddressResponse,
   }) {
     final String safeJsonItems =
         jsonEncode(localData).replaceAll('</', r'<\/');
@@ -721,6 +1058,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
     final String safeRefreshToken = jsonEncode(refreshToken ?? '');
     final String safeUserCookie = jsonEncode(userCookieValue ?? '');
     final String safeUserPlainJson = jsonEncode(userPlainJson ?? '');
+    final String safeZustandUserJson = jsonEncode(zustandUserJson ?? '');
+    final String safeInitialAddressJson =
+        jsonEncode(initialAddressResponse).replaceAll('</', r'<\/');
     final String safeTargetKey = jsonEncode(targetKey);
 
     const String template = r'''
@@ -734,6 +1074,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
           var initRTk = __REFRESH_TOKEN__;
           var initUCk = __USER_COOKIE__;
           var initUJson = __USER_PLAIN_JSON__;
+          var initZustandUJson = __ZUSTAND_USER_JSON__;
+          var initAddrResp = __INITIAL_ADDR_JSON__;
 
           if (!window.__nxOrigApi) {
             window.__nxOrigApi = {
@@ -753,6 +1095,14 @@ class _BrowserScreenState extends State<BrowserScreen> {
           var origClear = window.__nxOrigApi.clear;
           var origAtob = window.__nxOrigApi.atob;
           var origCookieDesc = window.__nxOrigApi.cookieDesc;
+          var origPushState = window.__nxOrigApi.pushState;
+          var origReplaceState = window.__nxOrigApi.replaceState;
+
+          function toEnDigits(s) {
+            return String(s == null ? '' : s)
+              .replace(/[۰-۹]/g, function(d) { return String(d.charCodeAt(0) - 1776); })
+              .replace(/[٠-٩]/g, function(d) { return String(d.charCodeAt(0) - 1632); });
+          }
 
           function setRawCookie(cookieStr) {
             try {
@@ -843,7 +1193,80 @@ class _BrowserScreenState extends State<BrowserScreen> {
             BirthDateEpoch: parsedUserObj.birthDateEpoch || 1005683400
           };
 
-          // ذخیره وضعیت اکانت فعال در سطح window تا تمام Interceptorها همیشه آخرین اکانت را بخوانند
+          function buildZustandUserString(uObj, tok, refTok) {
+            var copy = Object.assign({}, uObj || {});
+            if (tok) copy.token = tok;
+            copy.customerIsLoggedInForFirstTime = false;
+            copy.state = true;
+            copy.stateCode = 1;
+            return JSON.stringify({
+              state: {
+                user: copy,
+                expireTime: Math.floor(Date.now() / 1000) + 86400,
+                refreshToken: refTok || ''
+              },
+              version: 0
+            });
+          }
+
+          function normalizeAddressResponseObject(addrResp) {
+            if (!addrResp || typeof addrResp !== 'object') return null;
+            try {
+              var d = addrResp.data;
+              if (d && Array.isArray(d.customerAddressResponseItems)) {
+                var arr = d.customerAddressResponseItems;
+                if (arr.length > 0) {
+                  var hasDef = false;
+                  for (var i = 0; i < arr.length; i++) {
+                    if (arr[i] && arr[i].isDefault === true) {
+                      hasDef = true;
+                      break;
+                    }
+                  }
+                  if (!hasDef && arr[0] && typeof arr[0] === 'object') {
+                    arr[0].isDefault = true;
+                  }
+                  if (!d.totalCount || Number(d.totalCount) < arr.length) {
+                    d.totalCount = arr.length;
+                  }
+                }
+                addrResp.success = true;
+                addrResp.hasValidationError = false;
+                return addrResp;
+              }
+            } catch (_) {}
+            return null;
+          }
+
+          function syncAddressToSessionStorage(addrResp) {
+            try {
+              var norm = normalizeAddressResponseObject(addrResp);
+              if (!norm || !norm.data) return;
+              var st = window.__nxState;
+              if (!st) return;
+              st.cachedAddressResp = norm;
+              var altCid = st.savedUserObj && (st.savedUserObj.alternativeCustomerId || st.savedUserObj.id);
+              if (altCid) {
+                origSetItem.call(sessionStorage, 'ok_addr_' + altCid + '_', JSON.stringify(norm.data));
+              }
+              var items = norm.data.customerAddressResponseItems;
+              if (Array.isArray(items) && items.length > 0) {
+                var defItem = items[0];
+                for (var i = 0; i < items.length; i++) {
+                  if (items[i] && items[i].isDefault) {
+                    defItem = items[i];
+                    break;
+                  }
+                }
+                if (defItem) {
+                  if (defItem.cityId) origSetItem.call(localStorage, 'city_id', String(defItem.cityId));
+                  if (defItem.cityName) origSetItem.call(localStorage, 'city_name', String(defItem.cityName));
+                }
+              }
+            } catch (_) {}
+          }
+
+          // ذخیره وضعیت اکانت فعال در سطح window
           var prevKey = window.__nxState ? window.__nxState.targetKey : null;
           window.__nxState = {
             targetKey: targetKey,
@@ -852,8 +1275,13 @@ class _BrowserScreenState extends State<BrowserScreen> {
             rTk: initRTk,
             uCk: initUCk,
             uJson: initUJson,
+            zustandUJson: initZustandUJson || buildZustandUserString(parsedUserObj, initTMs, initRTk),
             savedUserObj: parsedUserObj,
             savedUserInfoPascal: parsedUserInfoPascal,
+            cachedAddressResp: normalizeAddressResponseObject(initAddrResp) ||
+              ((prevKey === targetKey && window.__nxState && window.__nxState.cachedAddressResp)
+                ? window.__nxState.cachedAddressResp
+                : null),
             savedPersistRoot: (prevKey === targetKey && window.__nxState && window.__nxState.savedPersistRoot)
               ? window.__nxState.savedPersistRoot
               : null
@@ -868,6 +1296,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
                 setRawCookie('token=' + st.tMs + '; path=/; max-age=7776000; SameSite=Lax');
                 setRawCookie('tokenMS=' + st.tMs + '; domain=.okala.com; path=/; max-age=7776000; Secure; SameSite=None');
                 setRawCookie('token=' + st.tMs + '; domain=.okala.com; path=/; max-age=7776000; Secure; SameSite=None');
+                setRawCookie('checkTenant=true; path=/; max-age=7776000; SameSite=Lax');
+                setRawCookie('checkTenant=true; domain=.okala.com; path=/; max-age=7776000; Secure; SameSite=None');
               }
               if (st.uCk) {
                 var cleanUCk = fixUserStatusesInString(st.uCk, true);
@@ -877,7 +1307,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
               if (st.rTk) {
                 setRawCookie('refresh_token=' + st.rTk + '; domain=.okala.com; path=/; max-age=7776000; Secure; SameSite=None');
               } else {
-                // پاکسازی هرگونه کوکی منقضی refresh_token تا BFF اوکالا نشست را باطل نکند
                 setRawCookie('refresh_token=; path=/; max-age=0');
                 setRawCookie('refresh_token=; domain=.okala.com; path=/; max-age=0; Secure; SameSite=None');
               }
@@ -899,10 +1328,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   if (!item || !item.name) continue;
                   var k = String(item.name);
                   if (k === 'refresh_token' && !st.rTk) continue;
+                  if (k === 'user') continue; // کلید user در localStorage با ساختار استاندارد Zustand ذخیره می‌شود
                   var v = item.value != null ? String(item.value) : '';
-                  if (k === 'user') {
-                    v = fixUserStatusesInString(v, true);
-                  } else if (k === 'persist:root') {
+                  if (k === 'persist:root') {
                     v = fixUserStatusesInString(v, false);
                     st.savedPersistRoot = v;
                   }
@@ -919,8 +1347,12 @@ class _BrowserScreenState extends State<BrowserScreen> {
               } else {
                 origRemoveItem.call(localStorage, 'refresh_token');
               }
-              if (st.uCk !== '') {
-                origSetItem.call(localStorage, 'user', fixUserStatusesInString(st.uCk, true));
+              if (st.zustandUJson) {
+                origSetItem.call(localStorage, 'user', st.zustandUJson);
+              }
+
+              if (st.cachedAddressResp) {
+                syncAddressToSessionStorage(st.cachedAddressResp);
               }
 
               origSetItem.call(localStorage, '__nx_active_key', st.targetKey);
@@ -930,10 +1362,13 @@ class _BrowserScreenState extends State<BrowserScreen> {
             } catch (_) {}
           }
 
-          // ۱. تزریق اولیه یا ترمیم کلیدهای اکانت فعلی
+          // ۱. بررسی تغییر اکانت (با بررسی همزمان targetKey و تطابق دقیق توکن)
           var isNewAccount = false;
           try {
-            isNewAccount = (localStorage.getItem('__nx_active_key') !== targetKey);
+            var curActiveKey = localStorage.getItem('__nx_active_key');
+            var curStoredTok = localStorage.getItem('token');
+            isNewAccount = (curActiveKey !== targetKey) ||
+                           (Boolean(initTMs) && curStoredTok !== initTMs);
           } catch (_) {
             isNewAccount = true;
           }
@@ -945,6 +1380,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
               applyAuthState(false);
             } else if (!window.__nxState.savedPersistRoot) {
               window.__nxState.savedPersistRoot = localStorage.getItem('persist:root');
+            }
+            if (window.__nxState.cachedAddressResp) {
+              syncAddressToSessionStorage(window.__nxState.cachedAddressResp);
             }
             syncCookiesNow();
           }
@@ -959,19 +1397,41 @@ class _BrowserScreenState extends State<BrowserScreen> {
                    lower.indexOf('refresh-token') !== -1;
           }
 
+          function isLogoutUrl(urlStr) {
+            var lower = String(urlStr || '').toLowerCase();
+            return lower.indexOf('/tokens/logout') !== -1 || lower.indexOf('/account/logout') !== -1;
+          }
+
           function isBffUrl(urlStr) {
             var lower = String(urlStr || '').toLowerCase();
             return lower.indexOf('/api/bff/') !== -1;
           }
 
-          function shouldAttachBearerHeader(urlStr) {
+          function isAddressListUrl(urlStr) {
+            var lower = String(urlStr || '').toLowerCase();
+            return lower.indexOf('getcustomeraddresseswithpaging') !== -1 ||
+                   lower.indexOf('customeraddressforreact') !== -1;
+          }
+
+          function isAddOrEditAddressUrl(urlStr) {
+            var lower = String(urlStr || '').toLowerCase();
+            return lower.indexOf('addaddress') !== -1 ||
+                   lower.indexOf('editaddress') !== -1;
+          }
+
+          function shouldAttachBearerHeaderXhr(urlStr) {
             var lower = String(urlStr || '').toLowerCase();
             if (lower.indexOf('apigateway.okala.com') === -1) return false;
             if (lower.indexOf('/api/frontend') !== -1) return false;
+            if (lower.indexOf('/api/bff/') !== -1) return false;
             return true;
           }
 
           function buildDefaultAddressData() {
+            var st = window.__nxState || {};
+            if (st.cachedAddressResp && st.cachedAddressResp.data) {
+              return st.cachedAddressResp;
+            }
             return {
               success: true,
               hasValidationError: false,
@@ -981,7 +1441,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
                 hasNextPage: false,
                 hasPreviousPage: false,
                 pageIndex: 1,
-                pageSize: 1,
+                pageSize: 15,
                 totalCount: 0,
                 totalPages: 0
               },
@@ -1048,7 +1508,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   syncCookiesNow();
                 }
               }
-              // در وضعیت سالم، فیلد auth در پاسخ BFF برابر null است
               bffObj.auth = null;
 
               if (!bffObj.meta || typeof bffObj.meta !== 'object') {
@@ -1106,7 +1565,15 @@ class _BrowserScreenState extends State<BrowserScreen> {
                 fixUserStatusesInObject(d.userMe);
               }
 
-              if (!d.address || typeof d.address !== 'object' || d.address.success === false || d.address.unauthorizedRequest) {
+              if (d.address && typeof d.address === 'object' && d.address.success !== false && !d.address.unauthorizedRequest &&
+                  d.address.data && Array.isArray(d.address.data.customerAddressResponseItems) &&
+                  d.address.data.customerAddressResponseItems.length > 0) {
+                d.address = normalizeAddressResponseObject(d.address);
+                syncAddressToSessionStorage(d.address);
+              } else if (st.cachedAddressResp && st.cachedAddressResp.data) {
+                d.address = st.cachedAddressResp;
+                syncAddressToSessionStorage(d.address);
+              } else if (!d.address || typeof d.address !== 'object' || d.address.success === false || d.address.unauthorizedRequest) {
                 d.address = buildDefaultAddressData();
               }
 
@@ -1204,6 +1671,74 @@ class _BrowserScreenState extends State<BrowserScreen> {
             }
           }
 
+          function sanitizeOutgoingJsonBody(urlStr, body) {
+            if (typeof body !== 'string' || body.length < 2) return body;
+            var trimmed = body.trim();
+            if (trimmed.charAt(0) !== '{') return body;
+            try {
+              var st = window.__nxState || {};
+              var uObj = st.savedUserObj || {};
+              var validCid = Number(uObj.id || uObj.alternativeCustomerId || 0);
+              var obj = JSON.parse(trimmed);
+              if (!obj || typeof obj !== 'object') return body;
+              var modified = false;
+
+              if ('customerId' in obj && validCid > 0) {
+                if (!obj.customerId || Number(obj.customerId) <= 0 || Number(obj.customerId) !== validCid) {
+                  obj.customerId = validCid;
+                  modified = true;
+                }
+              }
+
+              if (isAddOrEditAddressUrl(urlStr)) {
+                if (validCid > 0) {
+                  obj.customerId = validCid;
+                }
+                if (obj.plaque != null) {
+                  obj.plaque = toEnDigits(obj.plaque).trim() || '1';
+                } else {
+                  obj.plaque = '1';
+                }
+                if (obj.unit != null) {
+                  obj.unit = toEnDigits(obj.unit).trim() || '1';
+                } else {
+                  obj.unit = '1';
+                }
+                if (obj.mobilePhone != null) {
+                  obj.mobilePhone = toEnDigits(obj.mobilePhone).trim();
+                } else {
+                  obj.mobilePhone = '';
+                }
+                if (obj.postalCode != null) {
+                  obj.postalCode = toEnDigits(obj.postalCode).trim();
+                }
+                if (obj.ShoppingSectorPartId == null || obj.ShoppingSectorPartId === '') {
+                  obj.ShoppingSectorPartId = '0';
+                }
+                if (obj.shoppingSectorId == null || obj.shoppingSectorId === '') {
+                  obj.shoppingSectorId = '0';
+                }
+                if (!obj.addressTypeId || Number(obj.addressTypeId) <= 0) {
+                  obj.addressTypeId = 3;
+                }
+                if (!obj.oprationDuration || Number(obj.oprationDuration) <= 0) {
+                  obj.oprationDuration = 12500;
+                }
+                if (!obj.address || String(obj.address).trim() === '') {
+                  obj.address = 'آدرس منتخب روی نقشه';
+                }
+                if (!obj.mapPlatform) {
+                  obj.mapPlatform = 'ParsiMap';
+                }
+                modified = true;
+              }
+
+              return modified ? JSON.stringify(obj) : body;
+            } catch (_) {
+              return body;
+            }
+          }
+
           function buildFallbackApiResponse(urlStr) {
             var lower = String(urlStr || '').toLowerCase();
             var st = window.__nxState || {};
@@ -1212,6 +1747,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
             if (isTokenRefreshUrl(lower)) {
               return buildSyntheticTokenResponse();
+            }
+            if (isLogoutUrl(lower)) {
+              return JSON.stringify({ success: true });
             }
             if (isBffUrl(lower)) {
               return JSON.stringify(repairBffObject({
@@ -1264,7 +1802,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
             if (lower.indexOf('saveuserinfo') !== -1) {
               return 'false';
             }
-            if (lower.indexOf('getcustomeraddresseswithpaging') !== -1 || lower.indexOf('customeraddressforreact') !== -1) {
+            if (isAddressListUrl(lower)) {
               return JSON.stringify(buildDefaultAddressData());
             }
             if (lower.indexOf('discounts/customer') !== -1) {
@@ -1316,18 +1854,28 @@ class _BrowserScreenState extends State<BrowserScreen> {
           if (!window.__nxInterceptorsInstalled) {
             window.__nxInterceptorsInstalled = true;
 
-            // الف) محافظت از بررسی انقضای JWT در سمت کلاینت (window.atob)
+            // الف) محافظت از بررسی انقضای JWT و تکمیل کلیم‌های Voyager در سمت کلاینت (window.atob)
             if (origAtob) {
               window.atob = function(b64) {
                 var decoded = origAtob(b64);
                 if (decoded && decoded.indexOf('"exp"') !== -1 &&
-                    (decoded.indexOf('cerberus') !== -1 || decoded.indexOf('okala') !== -1 || decoded.indexOf('customer_client_id') !== -1)) {
+                    (decoded.indexOf('cerberus') !== -1 || decoded.indexOf('okala') !== -1 || decoded.indexOf('customer_client_id') !== -1 || decoded.indexOf('"sub"') !== -1)) {
                   try {
+                    var st = window.__nxState || {};
+                    var uObj = st.savedUserObj || {};
                     var jwtObj = JSON.parse(decoded);
                     var nowSec = Math.floor(Date.now() / 1000);
                     jwtObj.nbf = nowSec - 3600;
                     jwtObj.iat = nowSec - 3600;
                     jwtObj.exp = nowSec + 86400;
+                    if (!jwtObj.tenant) jwtObj.tenant = 'okala';
+                    if (!jwtObj.userId && uObj.id) jwtObj.userId = String(uObj.id);
+                    if (!jwtObj.alternativeCustomerId && (uObj.alternativeCustomerId || uObj.id)) {
+                      jwtObj.alternativeCustomerId = String(uObj.alternativeCustomerId || uObj.id);
+                    }
+                    if (!jwtObj.cerberusId && uObj.alternativeId) {
+                      jwtObj.cerberusId = String(uObj.alternativeId);
+                    }
                     return JSON.stringify(jwtObj);
                   } catch (_) {}
                 }
@@ -1335,7 +1883,31 @@ class _BrowserScreenState extends State<BrowserScreen> {
               };
             }
 
-            // ب) محافظت از localStorage در برابر حذف یا لاگ‌اوت شدن Redux Persist
+            // ب) جلوگیری از هدایت به /logout یا /auth در History API
+            if (origPushState) {
+              window.history.pushState = function(state, title, url) {
+                if (url != null) {
+                  var uStr = String(url);
+                  if (uStr === '/logout' || uStr.indexOf('/logout?') === 0 || uStr === '/auth' || uStr.indexOf('/auth?') === 0) {
+                    return origPushState.call(this, state, title, '/stores');
+                  }
+                }
+                return origPushState.apply(this, arguments);
+              };
+            }
+            if (origReplaceState) {
+              window.history.replaceState = function(state, title, url) {
+                if (url != null) {
+                  var uStr = String(url);
+                  if (uStr === '/logout' || uStr.indexOf('/logout?') === 0 || uStr === '/auth' || uStr.indexOf('/auth?') === 0) {
+                    return origReplaceState.call(this, state, title, '/stores');
+                  }
+                }
+                return origReplaceState.apply(this, arguments);
+              };
+            }
+
+            // ج) محافظت از localStorage در برابر حذف یا لاگ‌اوت شدن Zustand (user) و Redux Persist (persist:root)
             Storage.prototype.setItem = function(key, value) {
               var k = String(key);
               var v = String(value);
@@ -1351,8 +1923,55 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   if (!v || v === 'null' || v === 'undefined' || v === '{}' || v === '%7B%7D') {
                     return;
                   }
-                  var shouldUrlEncode = v.indexOf('%7B') !== -1 || v.indexOf('%22') !== -1;
-                  v = fixUserStatusesInString(v, shouldUrlEncode);
+                  try {
+                    var isEnc = v.indexOf('%7B') !== -1 || v.indexOf('%22') !== -1;
+                    var rawU = isEnc ? decodeURIComponent(v) : v;
+                    var parsedU = JSON.parse(rawU);
+                    if (parsedU && typeof parsedU === 'object') {
+                      if ('state' in parsedU && ('version' in parsedU || 'expireTime' in parsedU || (parsedU.state && typeof parsedU.state === 'object'))) {
+                        // ساختار استاندارد Zustand (ماژول 37645)
+                        if (!parsedU.state || typeof parsedU.state !== 'object') {
+                          parsedU.state = {};
+                        }
+                        if (!parsedU.state.user || !parsedU.state.user.id) {
+                          parsedU.state.user = Object.assign({}, st.savedUserObj, { token: st.tMs });
+                        } else {
+                          parsedU.state.user.customerIsLoggedInForFirstTime = false;
+                          parsedU.state.user.state = true;
+                          parsedU.state.user.stateCode = 1;
+                          if (st.savedUserObj && st.savedUserObj.id && (!parsedU.state.user.id || Number(parsedU.state.user.id) <= 0)) {
+                            parsedU.state.user.id = st.savedUserObj.id;
+                          }
+                          if (st.savedUserObj && st.savedUserObj.alternativeCustomerId && (!parsedU.state.user.alternativeCustomerId || Number(parsedU.state.user.alternativeCustomerId) <= 0)) {
+                            parsedU.state.user.alternativeCustomerId = st.savedUserObj.alternativeCustomerId;
+                          }
+                          if (st.tMs) {
+                            parsedU.state.user.token = st.tMs;
+                          }
+                          st.savedUserObj = Object.assign({}, st.savedUserObj, parsedU.state.user);
+                        }
+                        parsedU.state.expireTime = Math.floor(Date.now() / 1000) + 86400;
+                        v = JSON.stringify(parsedU);
+                        st.zustandUJson = v;
+                      } else {
+                        // اگر آبجکت تخت بود، به فرمت استاندارد Zustand تبدیل شود
+                        parsedU.customerIsLoggedInForFirstTime = false;
+                        parsedU.state = true;
+                        parsedU.stateCode = 1;
+                        if (st.savedUserObj && st.savedUserObj.id && (!parsedU.id || Number(parsedU.id) <= 0)) {
+                          parsedU.id = st.savedUserObj.id;
+                        }
+                        if (st.savedUserObj && st.savedUserObj.alternativeCustomerId && (!parsedU.alternativeCustomerId || Number(parsedU.alternativeCustomerId) <= 0)) {
+                          parsedU.alternativeCustomerId = st.savedUserObj.alternativeCustomerId;
+                        }
+                        st.savedUserObj = Object.assign({}, st.savedUserObj, parsedU);
+                        v = buildZustandUserString(st.savedUserObj, st.tMs, st.rTk);
+                        st.zustandUJson = v;
+                      }
+                    }
+                  } catch (_) {
+                    if (st.zustandUJson) v = st.zustandUJson;
+                  }
                 } else if (k === 'persist:root') {
                   v = fixUserStatusesInString(v, false);
                   try {
@@ -1369,6 +1988,10 @@ class _BrowserScreenState extends State<BrowserScreen> {
                           parsedUserSlice.user.customerIsLoggedInForFirstTime = false;
                           parsedUserSlice.user.state = true;
                           parsedUserSlice.user.stateCode = 1;
+                          if (st.savedUserObj && st.savedUserObj.id) {
+                            parsedUserSlice.user.id = st.savedUserObj.id;
+                            parsedUserSlice.user.alternativeCustomerId = st.savedUserObj.alternativeCustomerId || st.savedUserObj.id;
+                          }
                           if (st.tMs) {
                             parsedUserSlice.user.token = st.tMs;
                           }
@@ -1412,7 +2035,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
               return origClear.call(this);
             };
 
-            // ج) محافظت از کوکی‌ها در برابر حذف توسط سایت
+            // د) محافظت از کوکی‌ها در برابر حذف توسط سایت
             if (origCookieDesc && origCookieDesc.set && origCookieDesc.get) {
               try {
                 Object.defineProperty(document, 'cookie', {
@@ -1454,7 +2077,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
               } catch (_) {}
             }
 
-            // د) محافظت از window.fetch (به‌ویژه روی BFF اوکالا /api/bff/v1/stores و رفرش‌توکن)
+            // هـ) محافظت از window.fetch (بدون تزریق هدر Authorization روی /api/bff/ تا CORS Preflight خطا ندهد)
             if (window.fetch) {
               var origFetch = window.fetch;
               window.fetch = function(input, init) {
@@ -1465,6 +2088,14 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   urlStr = (typeof input === 'string') ? input : (input && input.url ? input.url : String(input));
                 } catch (_) {}
 
+                if (isLogoutUrl(urlStr)) {
+                  return Promise.resolve(new Response(JSON.stringify({ success: true }), {
+                    status: 200,
+                    statusText: 'OK',
+                    headers: { 'Content-Type': 'application/json' }
+                  }));
+                }
+
                 if (curTMs && isTokenRefreshUrl(urlStr)) {
                   return Promise.resolve(new Response(buildSyntheticTokenResponse(), {
                     status: 200,
@@ -1473,17 +2104,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   }));
                 }
 
-                // فقط به درخواست‌های apigateway.okala.com (به‌جز /api/frontend) هدر Authorization اضافه شود
-                if (curTMs && shouldAttachBearerHeader(urlStr)) {
-                  try {
-                    init = init ? Object.assign({}, init) : {};
-                    var hdrs = new Headers(init.headers || (typeof input !== 'string' && input && input.headers ? input.headers : undefined));
-                    var curAuth = hdrs.get('Authorization') || hdrs.get('authorization');
-                    if (!curAuth || curAuth.indexOf('null') !== -1 || curAuth.indexOf('undefined') !== -1 || curAuth.trim() === 'Bearer') {
-                      hdrs.set('Authorization', 'Bearer ' + curTMs);
-                    }
-                    init.headers = hdrs;
-                  } catch (_) {}
+                if (isBffUrl(urlStr)) {
+                  syncCookiesNow();
                 }
 
                 return origFetch.call(this, input, init).then(function(response) {
@@ -1550,7 +2172,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
               };
             }
 
-            // هـ) محافظت همگام در XMLHttpRequest (برای Axios) روی تمامی APIهای apigateway.okala.com
+            // و) محافظت همگام در XMLHttpRequest (برای Axios) روی تمامی APIهای apigateway.okala.com
             if (window.XMLHttpRequest) {
               var origOpen = XMLHttpRequest.prototype.open;
               var origSend = XMLHttpRequest.prototype.send;
@@ -1564,6 +2186,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
               XMLHttpRequest.prototype.open = function(method, url) {
                 var self = this;
                 self.__nxUrl = String(url || '');
+                self.__nxMethod = String(method || 'GET').toUpperCase();
                 self.__nxHasAuth = false;
 
                 try {
@@ -1572,7 +2195,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
                       configurable: true,
                       get: function() {
                         var realStatus = statusProtoDesc.get.call(self);
-                        if (realStatus === 401 || realStatus === 403 || (isTokenRefreshUrl(self.__nxUrl) && realStatus >= 400)) {
+                        if (realStatus === 401 || realStatus === 403 || ((isTokenRefreshUrl(self.__nxUrl) || isLogoutUrl(self.__nxUrl)) && realStatus >= 400)) {
                           return 200;
                         }
                         return realStatus;
@@ -1584,7 +2207,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
                       configurable: true,
                       get: function() {
                         var realStatus = statusProtoDesc ? statusProtoDesc.get.call(self) : 200;
-                        if (realStatus === 401 || realStatus === 403 || (isTokenRefreshUrl(self.__nxUrl) && realStatus >= 400)) {
+                        if (realStatus === 401 || realStatus === 403 || ((isTokenRefreshUrl(self.__nxUrl) || isLogoutUrl(self.__nxUrl)) && realStatus >= 400)) {
                           return 'OK';
                         }
                         return statusTextProtoDesc.get.call(self);
@@ -1596,7 +2219,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
                       configurable: true,
                       get: function() {
                         var realStatus = statusProtoDesc ? statusProtoDesc.get.call(self) : 200;
-                        if (realStatus === 401 || realStatus === 403 || (isTokenRefreshUrl(self.__nxUrl) && realStatus >= 400)) {
+                        if (isLogoutUrl(self.__nxUrl) || realStatus === 401 || realStatus === 403 || (isTokenRefreshUrl(self.__nxUrl) && realStatus >= 400)) {
                           return buildFallbackApiResponse(self.__nxUrl);
                         }
                         var rawTxt = '';
@@ -1605,8 +2228,26 @@ class _BrowserScreenState extends State<BrowserScreen> {
                         } catch (_) {
                           return '';
                         }
-                        if (isTokenRefreshUrl(self.__nxUrl) && (typeof rawTxt !== 'string' || rawTxt.indexOf('access_token') === -1)) {
+                        if (isTokenRefreshUrl(self.__nxUrl)) {
+                          try {
+                            var tokParsed = JSON.parse(rawTxt);
+                            var exTok = tokParsed && (tokParsed.access_token || (tokParsed.data && tokParsed.data.access_token));
+                            if (typeof exTok === 'string' && exTok.length > 20) {
+                              if (window.__nxState) window.__nxState.tMs = exTok;
+                              return rawTxt;
+                            }
+                          } catch (_) {}
                           return buildSyntheticTokenResponse();
+                        }
+                        if (isAddressListUrl(self.__nxUrl) && typeof rawTxt === 'string' && rawTxt.length > 0) {
+                          try {
+                            var addrObj = JSON.parse(rawTxt);
+                            var normAddr = normalizeAddressResponseObject(addrObj);
+                            if (normAddr) {
+                              syncAddressToSessionStorage(normAddr);
+                              return JSON.stringify(normAddr);
+                            }
+                          } catch (_) {}
                         }
                         if (isBffUrl(self.__nxUrl) && typeof rawTxt === 'string' && rawTxt.length > 0) {
                           return repairBffResponseText(rawTxt);
@@ -1630,7 +2271,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
                       configurable: true,
                       get: function() {
                         var realStatus = statusProtoDesc ? statusProtoDesc.get.call(self) : 200;
-                        if (realStatus === 401 || realStatus === 403 || (isTokenRefreshUrl(self.__nxUrl) && realStatus >= 400)) {
+                        if (isLogoutUrl(self.__nxUrl) || realStatus === 401 || realStatus === 403 || (isTokenRefreshUrl(self.__nxUrl) && realStatus >= 400)) {
                           var fallbackStr = buildFallbackApiResponse(self.__nxUrl);
                           if (self.responseType === 'json') {
                             try { return JSON.parse(fallbackStr); } catch (_) { return fallbackStr; }
@@ -1642,18 +2283,41 @@ class _BrowserScreenState extends State<BrowserScreen> {
                           rawResp = responseProtoDesc.get.call(self);
                         } catch (_) {}
                         if (isTokenRefreshUrl(self.__nxUrl)) {
-                          var hasAcc = false;
+                          var exTok = null;
                           if (typeof rawResp === 'string') {
-                            hasAcc = rawResp.indexOf('access_token') !== -1;
+                            try {
+                              var tp = JSON.parse(rawResp);
+                              exTok = tp && (tp.access_token || (tp.data && tp.data.access_token));
+                            } catch (_) {}
                           } else if (rawResp && typeof rawResp === 'object') {
-                            hasAcc = Boolean(rawResp.access_token || (rawResp.data && rawResp.data.access_token));
+                            exTok = rawResp.access_token || (rawResp.data && rawResp.data.access_token);
                           }
-                          if (!hasAcc) {
-                            var synStr = buildSyntheticTokenResponse();
-                            if (self.responseType === 'json') {
-                              try { return JSON.parse(synStr); } catch (_) { return synStr; }
+                          if (typeof exTok === 'string' && exTok.length > 20) {
+                            if (window.__nxState) window.__nxState.tMs = exTok;
+                            return rawResp;
+                          }
+                          var synStr = buildSyntheticTokenResponse();
+                          if (self.responseType === 'json') {
+                            try { return JSON.parse(synStr); } catch (_) { return synStr; }
+                          }
+                          return synStr;
+                        }
+                        if (isAddressListUrl(self.__nxUrl)) {
+                          if (typeof rawResp === 'string' && rawResp.length > 0) {
+                            try {
+                              var aObj = JSON.parse(rawResp);
+                              var nAddr = normalizeAddressResponseObject(aObj);
+                              if (nAddr) {
+                                syncAddressToSessionStorage(nAddr);
+                                return JSON.stringify(nAddr);
+                              }
+                            } catch (_) {}
+                          } else if (rawResp && typeof rawResp === 'object') {
+                            var nAddrObj = normalizeAddressResponseObject(rawResp);
+                            if (nAddrObj) {
+                              syncAddressToSessionStorage(nAddrObj);
+                              return nAddrObj;
                             }
-                            return synStr;
                           }
                         }
                         if (isBffUrl(self.__nxUrl)) {
@@ -1687,24 +2351,23 @@ class _BrowserScreenState extends State<BrowserScreen> {
               XMLHttpRequest.prototype.setRequestHeader = function(header, value) {
                 var st = window.__nxState || {};
                 if (String(header).toLowerCase() === 'authorization') {
-                  var vStr = String(value || '');
-                  if (vStr.indexOf('null') !== -1 || vStr.indexOf('undefined') !== -1 || vStr.trim() === 'Bearer') {
-                    if (st.tMs) {
-                      this.__nxHasAuth = true;
-                      return origSetRequestHeader.call(this, header, 'Bearer ' + st.tMs);
-                    }
-                  } else {
-                    this.__nxHasAuth = true;
+                  this.__nxHasAuth = true;
+                  if (st.tMs && shouldAttachBearerHeaderXhr(this.__nxUrl)) {
+                    return origSetRequestHeader.call(this, header, 'Bearer ' + st.tMs);
                   }
                 }
                 return origSetRequestHeader.apply(this, arguments);
               };
 
-              XMLHttpRequest.prototype.send = function() {
+              XMLHttpRequest.prototype.send = function(body) {
                 try {
                   var st = window.__nxState || {};
-                  if (!this.__nxHasAuth && st.tMs && this.__nxUrl && shouldAttachBearerHeader(this.__nxUrl)) {
+                  if (!this.__nxHasAuth && st.tMs && this.__nxUrl && shouldAttachBearerHeaderXhr(this.__nxUrl)) {
                     origSetRequestHeader.call(this, 'Authorization', 'Bearer ' + st.tMs);
+                  }
+                  if (typeof body === 'string' && this.__nxUrl && this.__nxUrl.indexOf('okala.com') !== -1) {
+                    var cleanBody = sanitizeOutgoingJsonBody(this.__nxUrl, body);
+                    return origSend.call(this, cleanBody);
                   }
                 } catch (_) {}
                 return origSend.apply(this, arguments);
@@ -1712,7 +2375,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
             }
           }
 
-          // و) تایمر نگهبان برای اطمینان از پاک نشدن نشست و کوکی‌ها
+          // ز) تایمر نگهبان برای اطمینان از پاک نشدن نشست و کوکی‌ها
           if (window.__nxWatchdogTimer) {
             clearInterval(window.__nxWatchdogTimer);
           }
@@ -1720,12 +2383,12 @@ class _BrowserScreenState extends State<BrowserScreen> {
             try {
               var st = window.__nxState;
               if (!st || st.targetKey !== targetKey) return;
-              if (st.tMs && !localStorage.getItem('token')) {
+              if (st.tMs && localStorage.getItem('token') !== st.tMs) {
                 origSetItem.call(localStorage, 'token', st.tMs);
                 origSetItem.call(localStorage, 'tokenMS', st.tMs);
               }
-              if (st.uCk && !localStorage.getItem('user')) {
-                origSetItem.call(localStorage, 'user', fixUserStatusesInString(st.uCk, true));
+              if (st.zustandUJson && !localStorage.getItem('user')) {
+                origSetItem.call(localStorage, 'user', st.zustandUJson);
               }
               var curCookies = origCookieDesc && origCookieDesc.get ? origCookieDesc.get.call(document) : document.cookie;
               if (st.tMs && curCookies.indexOf('token=') === -1) {
@@ -1745,14 +2408,18 @@ class _BrowserScreenState extends State<BrowserScreen> {
         .replaceAll('__TOKEN_MS__', safeTokenMs)
         .replaceAll('__REFRESH_TOKEN__', safeRefreshToken)
         .replaceAll('__USER_COOKIE__', safeUserCookie)
-        .replaceAll('__USER_PLAIN_JSON__', safeUserPlainJson);
+        .replaceAll('__USER_PLAIN_JSON__', safeUserPlainJson)
+        .replaceAll('__ZUSTAND_USER_JSON__', safeZustandUserJson)
+        .replaceAll('__INITIAL_ADDR_JSON__', safeInitialAddressJson);
   }
 
   Future<void> _loadAccount(int index) async {
     if (!mounted) return;
     _sessionGeneration++;
+    _globalSessionCounter++;
     final int currentGen = _sessionGeneration;
-    final String targetKey = '__nx_acc_${index}_$currentGen';
+    final String targetKey =
+        '__nx_acc_${index}_${currentGen}_${_globalSessionCounter}_${DateTime.now().microsecondsSinceEpoch}';
 
     setState(() {
       _isLoading = true;
@@ -1764,20 +2431,37 @@ class _BrowserScreenState extends State<BrowserScreen> {
     });
 
     try {
-      // ۱. توقف کامل صفحه قبلی قبل از تغییر کوکی‌ها
+      // ۱. توقف کامل صفحه قبلی و پاکسازی Storage در سطح جاوااسکریپت و بومی قبل از تغییر اکانت
       if (_webViewController != null) {
         await _webViewController!.stopLoading();
         await _webViewController!.removeAllUserScripts();
+        try {
+          await _webViewController!.evaluateJavascript(source: '''
+            try {
+              if (window.__nxWatchdogTimer) clearInterval(window.__nxWatchdogTimer);
+              window.__nxState = null;
+              if (window.__nxOrigApi && window.__nxOrigApi.clear) {
+                window.__nxOrigApi.clear.call(localStorage);
+                window.__nxOrigApi.clear.call(sessionStorage);
+              } else {
+                localStorage.clear();
+                sessionStorage.clear();
+              }
+            } catch (_) {}
+          ''');
+        } catch (_) {}
         await _webViewController!.loadUrl(
           urlRequest: URLRequest(url: WebUri('about:blank')),
         );
       }
 
       final CookieManager cookieManager = CookieManager.instance();
+      final WebStorageManager webStorageManager = WebStorageManager.instance();
 
-      // ۲. پاکسازی کوکی‌های قبلی و دریافت اطلاعات اکانت جدید به صورت موازی
+      // ۲. پاکسازی کامل کوکی‌ها و WebStorage قبلی و دریافت اطلاعات اکانت جدید به صورت موازی
       final results = await Future.wait([
         cookieManager.deleteAllCookies(),
+        webStorageManager.deleteAllData(),
         _httpClient
             .get(Uri.parse(widget.urls[index]))
             .timeout(const Duration(seconds: 15)),
@@ -1785,7 +2469,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
       if (!mounted || currentGen != _sessionGeneration) return;
 
-      final http.Response response = results[1] as http.Response;
+      final http.Response response = results[2] as http.Response;
       if (response.statusCode != 200) {
         throw Exception('پاسخ نامعتبر از سرور (کد ${response.statusCode})');
       }
@@ -1816,6 +2500,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
       String? tMs;
       String? rTk;
       String? rawUserValue;
+      String? rawPersistRootValue;
       final List<String> tokenCandidates = [];
 
       if (data['access_token'] is String &&
@@ -1867,6 +2552,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
               }
             } catch (_) {}
           } else if (name == 'persist:root') {
+            rawPersistRootValue = val;
             try {
               final dynamic pRoot = jsonDecode(val);
               if (pRoot is Map && pRoot['user'] is String) {
@@ -1893,7 +2579,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
             payload.containsKey('userId') ||
             payload.containsKey('alternativeCustomerId') ||
             payload.containsKey('tenant');
-        final int expVal = int.tryParse(payload['exp']?.toString() ?? '0') ?? 0;
+        final int expVal = _parsePositiveInt(payload['exp']);
         final int score = voyager ? 2 : (payload.isNotEmpty ? 1 : 0);
         if (score > bestScore || (score == bestScore && expVal > bestExp)) {
           bestScore = score;
@@ -1902,69 +2588,123 @@ class _BrowserScreenState extends State<BrowserScreen> {
         }
       }
 
-      // بررسی همیشه رفرش‌توکن با سرور اوکالا:
-      // ۱) اگر رفرش‌توکن سالم باشد، یک Access Token تازه ۱۰ ساعته می‌گیرد.
-      // ۲) اگر رفرش‌توکن منقضی باشد، rTk = null می‌شود تا کوکی منقضی به BFF اوکالا ارسال نشود و توکن اصلی نسوزد.
-      if (rTk != null && rTk.isNotEmpty) {
-        final renewed = await _tryRenewTokenIfPossible(tMs, rTk);
-        if (!mounted || currentGen != _sessionGeneration) return;
-        if (renewed['access_token'] != null &&
-            renewed['access_token']!.isNotEmpty) {
-          tMs = renewed['access_token'];
-        }
-        if (renewed['refresh_valid'] == 'true' &&
-            renewed['refresh_token'] != null &&
-            renewed['refresh_token']!.isNotEmpty) {
-          rTk = renewed['refresh_token'];
-        } else {
-          rTk = null;
-        }
+      // بررسی رفرش‌توکن و ارتقای احتمالی به توکن کامل Voyager
+      final renewed = await _tryRenewTokenIfPossible(tMs, rTk);
+      if (!mounted || currentGen != _sessionGeneration) return;
+      if (renewed['access_token'] != null &&
+          renewed['access_token']!.isNotEmpty) {
+        tMs = renewed['access_token'];
+      }
+      if (renewed['refresh_valid'] == 'true' &&
+          renewed['refresh_token'] != null &&
+          renewed['refresh_token']!.isNotEmpty) {
+        rTk = renewed['refresh_token'];
+      } else {
+        rTk = null;
       }
 
-      final String? normalizedUserCookie = rawUserValue != null
-          ? _normalizeUserValueString(rawUserValue, tMs, urlEncodeOutput: true)
-          : null;
-      final String? normalizedUserPlainJson = rawUserValue != null
-          ? _normalizeUserValueString(rawUserValue, tMs, urlEncodeOutput: false)
-          : null;
+      // استخراج آبجکت اولیه user و شناسه عددی مشتری برای دریافت آدرس‌های واقعی اکانت
+      Map<String, dynamic> cleanUserMap = {};
+      if (rawUserValue != null && rawUserValue.isNotEmpty) {
+        try {
+          final bool wasEnc =
+              rawUserValue.contains('%7B') || rawUserValue.contains('%22');
+          final String decStr =
+              wasEnc ? Uri.decodeComponent(rawUserValue) : rawUserValue;
+          final dynamic parsed = jsonDecode(decStr);
+          if (parsed is Map<String, dynamic>) {
+            cleanUserMap = (parsed['state'] is Map &&
+                    parsed['state']['user'] is Map<String, dynamic>)
+                ? Map<String, dynamic>.from(parsed['state']['user'] as Map)
+                : parsed;
+          }
+        } catch (_) {}
+      }
+
+      _normalizeUserMap(cleanUserMap, tMs);
+      final int initialCid = _parsePositiveInt(
+          cleanUserMap['id'] ?? cleanUserMap['alternativeCustomerId']);
+
+      // دریافت لیست آدرس‌های ثبت‌شده کاربر از سرور اوکالا
+      final Map<String, dynamic>? initialAddressResponse =
+          await _fetchUserAddressesFromApi(tMs, initialCid);
+      if (!mounted || currentGen != _sessionGeneration) return;
+
+      // تکمیل مجدد آبجکت user با استفاده از اطلاعات دقیق آدرس (در صورت وجود)
+      _normalizeUserMap(cleanUserMap, tMs,
+          addressResponse: initialAddressResponse);
+
+      final String normalizedUserPlainJson = jsonEncode(cleanUserMap);
+      final String normalizedUserCookie =
+          Uri.encodeComponent(normalizedUserPlainJson);
+      final String zustandUserJson =
+          _buildZustandUserStoreJson(cleanUserMap, tMs, rTk);
+      final String normalizedPersistRoot = _normalizePersistRootString(
+        rawPersistRootValue,
+        cleanUserMap,
+        tMs,
+        addressResponse: initialAddressResponse,
+      );
+
+      String defaultCityId = '129';
+      String defaultCityName = 'تهران';
+      if (initialAddressResponse != null &&
+          initialAddressResponse['data'] is Map &&
+          (initialAddressResponse['data']['customerAddressResponseItems']
+              is List) &&
+          (initialAddressResponse['data']['customerAddressResponseItems']
+                  as List)
+              .isNotEmpty) {
+        final dynamic fa = (initialAddressResponse['data']
+                ['customerAddressResponseItems'] as List)
+            .first;
+        if (fa is Map) {
+          final int cid = _parsePositiveInt(fa['cityId']);
+          if (cid > 0) defaultCityId = cid.toString();
+          final String cname = fa['cityName']?.toString().trim() ?? '';
+          if (cname.isNotEmpty) defaultCityName = cname;
+        }
+      }
 
       final List<Map<String, String>> normalizedLocalData = [];
       bool hasCityId = false;
       bool hasCityName = false;
-      bool hasUser = false;
+      bool hasPersistRoot = false;
 
       for (var item in rawLocalData) {
         if (item is! Map) continue;
         final String? name = item['name']?.toString();
         if (name == null || name.isEmpty) continue;
         if (name == 'refresh_token' && (rTk == null || rTk.isEmpty)) continue;
+        if (name == 'user') continue; // جداگانه با ساختار Zustand تزریق می‌شود
         String val = item['value']?.toString() ?? '';
 
-        if (name == 'user') {
-          val = _normalizeUserValueString(val, tMs, urlEncodeOutput: true);
-          hasUser = true;
-        } else if (name == 'persist:root') {
-          val = _normalizePersistRootString(val, tMs);
+        if (name == 'persist:root') {
+          val = normalizedPersistRoot;
+          hasPersistRoot = true;
         } else if (name == 'token' || name == 'tokenMS') {
           if (tMs != null && tMs.isNotEmpty) val = tMs;
         } else if (name == 'city_id') {
+          val = defaultCityId;
           hasCityId = true;
         } else if (name == 'city_name') {
+          val = defaultCityName;
           hasCityName = true;
         }
 
         normalizedLocalData.add({'name': name, 'value': val});
       }
 
-      if (!hasUser && normalizedUserCookie != null) {
+      if (!hasPersistRoot) {
         normalizedLocalData
-            .add({'name': 'user', 'value': normalizedUserCookie});
+            .add({'name': 'persist:root', 'value': normalizedPersistRoot});
       }
       if (!hasCityId) {
-        normalizedLocalData.add({'name': 'city_id', 'value': '129'});
+        normalizedLocalData.add({'name': 'city_id', 'value': defaultCityId});
       }
       if (!hasCityName) {
-        normalizedLocalData.add({'name': 'city_name', 'value': 'تهران'});
+        normalizedLocalData
+            .add({'name': 'city_name', 'value': defaultCityName});
       }
 
       // ۳. ثبت کوکی‌ها روی دامنه www.okala.com، .okala.com و apigateway.okala.com
@@ -1974,7 +2714,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
           DateTime.now().add(const Duration(days: 90)).millisecondsSinceEpoch;
       final List<Future<void>> cookieFutures = [];
 
-      // فقط اگر رفرش‌توکن معتبر بود ست شود؛ در غیر این صورت ارسال کوکی منقضی باعث لاگ‌اوت در BFF می‌شود
       if (rTk != null && rTk.isNotEmpty) {
         cookieFutures.add(cookieManager.setCookie(
           url: storeUri,
@@ -2035,9 +2774,20 @@ class _BrowserScreenState extends State<BrowserScreen> {
             sameSite: HTTPCookieSameSitePolicy.NONE,
           ));
         }
+
+        cookieFutures.add(cookieManager.setCookie(
+          url: storeUri,
+          name: 'checkTenant',
+          value: 'true',
+          path: '/',
+          expiresDate: futureExpiresMs,
+          isHttpOnly: false,
+          isSecure: false,
+          sameSite: HTTPCookieSameSitePolicy.LAX,
+        ));
       }
 
-      if (normalizedUserCookie != null && normalizedUserCookie.isNotEmpty) {
+      if (normalizedUserCookie.isNotEmpty) {
         cookieFutures.add(cookieManager.setCookie(
           url: storeUri,
           name: 'user',
@@ -2102,221 +2852,428 @@ class _BrowserScreenState extends State<BrowserScreen> {
       await Future.wait(cookieFutures);
       if (!mounted || currentGen != _sessionGeneration) return;
 
-      // ۴. آماده‌سازی اسکریپت تزریق و بارگذاری مستقیم فروشگاه
-      final String script = _buildFastInjectionScript(
+      // ۴. آماده‌سازی اسکریپت تزریق در DOCUMENT_START
+      _activeInjectionScript = _buildFastInjectionScript(
         targetKey: targetKey,
         localData: normalizedLocalData,
         tokenMs: tMs,
         refreshToken: rTk,
         userCookieValue: normalizedUserCookie,
         userPlainJson: normalizedUserPlainJson,
+        zustandUserJson: zustandUserJson,
+        initialAddressResponse: initialAddressResponse,
       );
-
-      _activeInjectionScript = script;
-
-      setState(() {
-        _isPreparingAccount = false;
-        _loadingMessage = 'در حال ورود به فروشگاه...';
-        _progress = 0.4;
-      });
 
       if (_webViewController != null) {
         await _webViewController!.addUserScript(
           userScript: UserScript(
-            source: script,
+            source: _activeInjectionScript,
             injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
-            forMainFrameOnly: false,
           ),
         );
+
+        if (!mounted || currentGen != _sessionGeneration) return;
+        setState(() {
+          _isPreparingAccount = false;
+          _loadingMessage = 'در حال بارگذاری فروشگاه...';
+          _progress = 0.4;
+        });
+
         await _webViewController!.loadUrl(
-          urlRequest: URLRequest(url: WebUri('https://$storeHost/stores')),
+          urlRequest: URLRequest(url: WebUri(storeUrl)),
         );
+      } else {
+        setState(() {
+          _isPreparingAccount = false;
+          _loadingMessage = 'در حال راه‌اندازی مرورگر...';
+          _progress = 0.4;
+        });
       }
-    } on TimeoutException {
-      if (!mounted || currentGen != _sessionGeneration) return;
-      setState(() {
-        _hasError = true;
-        _isLoading = false;
-        _isPreparingAccount = false;
-        _loadingMessage =
-            'مهلت اتصال به سرور به پایان رسید. اینترنت خود را بررسی کنید.';
-      });
     } catch (e) {
       if (!mounted || currentGen != _sessionGeneration) return;
       setState(() {
         _hasError = true;
         _isLoading = false;
         _isPreparingAccount = false;
-        _loadingMessage = 'خطا در بارگذاری حساب: $e';
+        _loadingMessage = 'خطا در بارگذاری حساب:\n${e.toString()}';
       });
     }
   }
 
-  void _nextAccount() {
-    if (_currentIndex < widget.urls.length - 1) {
-      _loadAccount(_currentIndex + 1);
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'شما در آخرین حساب کاربری هستید.',
-            style: TextStyle(color: bgDark, fontWeight: FontWeight.bold),
-          ),
-          backgroundColor: primaryAccent,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    }
-  }
-
-  void _prevAccount() {
-    if (_currentIndex > 0) {
-      _loadAccount(_currentIndex - 1);
-    }
+  void _goBackToInput() {
+    Navigator.of(context).pushReplacement(
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            const InputScreen(),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return FadeTransition(opacity: animation, child: child);
+        },
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return PopScope(
       canPop: false,
-      onPopInvoked: (didPop) async {
+      onPopInvokedWithResult: (bool didPop, dynamic result) async {
         if (didPop) return;
         if (_webViewController != null &&
             await _webViewController!.canGoBack()) {
-          final WebUri? currentUrl = await _webViewController!.getUrl();
-          if (currentUrl != null &&
-              currentUrl.path != '/' &&
-              currentUrl.path.isNotEmpty) {
-            await _webViewController!.goBack();
-            return;
-          }
-        }
-        if (context.mounted) {
-          Navigator.of(context).pop();
+          await _webViewController!.goBack();
+        } else {
+          _goBackToInput();
         }
       },
       child: Scaffold(
         backgroundColor: bgDark,
         appBar: AppBar(
+          backgroundColor: cardDark,
+          elevation: 2,
+          leading: Builder(
+            builder: (context) => IconButton(
+              icon: const Icon(Icons.menu_rounded, color: primaryAccent),
+              tooltip: 'فهرست حساب‌ها',
+              onPressed: () => Scaffold.of(context).openDrawer(),
+            ),
+          ),
           title: Text(
             'حساب ${_currentIndex + 1} از ${widget.urls.length}',
             style: const TextStyle(
-              fontSize: 15,
-              fontWeight: FontWeight.w700,
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
               color: textPrimary,
             ),
           ),
-          backgroundColor: surfaceDark,
-          elevation: 0,
-          iconTheme: const IconThemeData(color: textPrimary),
           centerTitle: true,
           actions: [
             IconButton(
-              tooltip: 'پاکسازی کش و حافظه',
-              onPressed: () => _cleanupWebViewCache(showNotice: true),
               icon: const Icon(Icons.cleaning_services_rounded,
-                  size: 20, color: textSecondary),
+                  color: textSecondary, size: 20),
+              tooltip: 'پاکسازی کش مرورگر',
+              onPressed: () => _cleanupWebViewCache(showNotice: true),
             ),
             IconButton(
+              icon: const Icon(Icons.refresh_rounded, color: textPrimary),
               tooltip: 'بارگذاری مجدد این حساب',
               onPressed: () => _loadAccount(_currentIndex),
-              icon: const Icon(Icons.refresh_rounded,
-                  size: 22, color: textSecondary),
             ),
-            if (_currentIndex > 0)
-              IconButton(
-                tooltip: 'حساب قبلی',
-                onPressed: _prevAccount,
-                icon: const Icon(Icons.arrow_back_ios_new_rounded,
-                    size: 18, color: primaryAccent),
+          ],
+          bottom: PreferredSize(
+            preferredSize: const Size.fromHeight(3.0),
+            child: _isLoading
+                ? LinearProgressIndicator(
+                    value: _progress > 0 ? _progress : null,
+                    backgroundColor: Colors.transparent,
+                    valueColor:
+                        const AlwaysStoppedAnimation<Color>(primaryAccent),
+                    minHeight: 3.0,
+                  )
+                : const SizedBox(height: 3.0),
+          ),
+        ),
+        drawer: _buildAccountDrawer(),
+        body: Stack(
+          children: [
+            InAppWebView(
+              initialSettings: InAppWebViewSettings(
+                javaScriptEnabled: true,
+                domStorageEnabled: true,
+                databaseEnabled: true,
+                useShouldOverrideUrlLoading: true,
+                userAgent: customUserAgent,
+                thirdPartyCookiesEnabled: true,
+                sharedCookiesEnabled: true,
+                cacheEnabled: true,
+                clearCache: false,
+                mediaPlaybackRequiresUserGesture: false,
+                allowsInlineMediaPlayback: true,
+                mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
+                supportZoom: false,
               ),
-            if (_currentIndex < widget.urls.length - 1)
-              Padding(
-                padding: const EdgeInsets.only(right: 4.0, left: 6.0),
-                child: TextButton(
-                  onPressed: _nextAccount,
-                  style: TextButton.styleFrom(
-                    foregroundColor: primaryAccent,
-                    padding: const EdgeInsets.symmetric(horizontal: 10),
-                  ),
-                  child: const Row(
-                    children: [
-                      Text('بعدی',
-                          style: TextStyle(fontWeight: FontWeight.bold)),
-                      SizedBox(width: 4),
-                      Icon(Icons.arrow_forward_ios_rounded, size: 14),
-                    ],
+              onWebViewCreated: (controller) async {
+                _webViewController = controller;
+                if (_activeInjectionScript.isNotEmpty) {
+                  await controller.addUserScript(
+                    userScript: UserScript(
+                      source: _activeInjectionScript,
+                      injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+                    ),
+                  );
+                  await controller.loadUrl(
+                    urlRequest: URLRequest(url: WebUri(storeUrl)),
+                  );
+                }
+              },
+              shouldOverrideUrlLoading: (controller, navigationAction) async {
+                final WebUri? uri = navigationAction.request.url;
+                if (uri != null) {
+                  final String path = uri.path.toLowerCase();
+                  // جلوگیری از هدایت به صفحه خروج (/logout) یا لاگین (/auth)
+                  if (uri.host.contains('okala.com') &&
+                      (path == '/logout' ||
+                          path.startsWith('/logout/') ||
+                          path == '/auth' ||
+                          path.startsWith('/auth/'))) {
+                    await controller.loadUrl(
+                      urlRequest: URLRequest(url: WebUri(storeUrl)),
+                    );
+                    return NavigationActionPolicy.CANCEL;
+                  }
+                }
+                return NavigationActionPolicy.ALLOW;
+              },
+              onLoadStart: (controller, url) async {
+                if (_isPreparingAccount) return;
+                if (_activeInjectionScript.isNotEmpty &&
+                    url != null &&
+                    url.toString().contains('okala.com')) {
+                  try {
+                    await controller.evaluateJavascript(
+                        source: _activeInjectionScript);
+                  } catch (_) {}
+                }
+                if (mounted) {
+                  setState(() {
+                    _isLoading = true;
+                    _loadingMessage = 'در حال بارگذاری فروشگاه...';
+                  });
+                }
+              },
+              onProgressChanged: (controller, progress) {
+                if (_isPreparingAccount) return;
+                if (mounted) {
+                  setState(() {
+                    _progress = progress / 100.0;
+                    if (progress >= 85 && _isLoading) {
+                      _isLoading = false;
+                    }
+                  });
+                }
+              },
+              onLoadStop: (controller, url) async {
+                if (_isPreparingAccount) return;
+                if (_activeInjectionScript.isNotEmpty &&
+                    url != null &&
+                    url.toString().contains('okala.com')) {
+                  try {
+                    await controller.evaluateJavascript(
+                        source: _activeInjectionScript);
+                  } catch (_) {}
+                }
+                if (mounted) {
+                  setState(() {
+                    _isLoading = false;
+                    _progress = 1.0;
+                  });
+                }
+              },
+              onReceivedError: (controller, request, error) {
+                if (request.isForMainFrame == true && !_isPreparingAccount) {
+                  if (mounted) {
+                    setState(() {
+                      _isLoading = false;
+                    });
+                  }
+                }
+              },
+            ),
+            if (_isPreparingAccount || _hasError)
+              Container(
+                color: bgDark.withOpacity(0.92),
+                child: Center(
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 32),
+                    padding: const EdgeInsets.all(24),
+                    decoration: BoxDecoration(
+                      color: cardDark,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: _hasError
+                            ? Colors.redAccent.withOpacity(0.4)
+                            : primaryAccent.withOpacity(0.25),
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.5),
+                          blurRadius: 20,
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_hasError)
+                          const Icon(Icons.error_outline_rounded,
+                              color: Colors.redAccent, size: 48)
+                        else
+                          const SizedBox(
+                            width: 42,
+                            height: 42,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 3.5,
+                              valueColor:
+                                  AlwaysStoppedAnimation<Color>(primaryAccent),
+                            ),
+                          ),
+                        const SizedBox(height: 18),
+                        Text(
+                          _loadingMessage,
+                          textAlign: TextAlign.center,
+                          textDirection: TextDirection.rtl,
+                          style: const TextStyle(
+                            color: textPrimary,
+                            fontSize: 14,
+                            height: 1.5,
+                          ),
+                        ),
+                        if (_hasError) ...[
+                          const SizedBox(height: 20),
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: primaryAccent,
+                              foregroundColor: bgDark,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            onPressed: () => _loadAccount(_currentIndex),
+                            icon: const Icon(Icons.refresh_rounded, size: 18),
+                            label: const Text(
+                              'تلاش مجدد',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
                   ),
                 ),
               ),
           ],
-          bottom: _isLoading
-              ? PreferredSize(
-                  preferredSize: const Size.fromHeight(3),
-                  child: LinearProgressIndicator(
-                    value: _progress > 0 ? _progress : null,
-                    backgroundColor: surfaceDark,
-                    color: primaryAccent,
-                    minHeight: 3,
-                  ),
-                )
-              : null,
         ),
-        drawer: Drawer(
-          backgroundColor: surfaceDark,
+        bottomNavigationBar:
+            widget.urls.length > 1 ? _buildBottomBar() : null,
+      ),
+    );
+  }
+
+  Widget _buildBottomBar() {
+    final bool hasPrev = _currentIndex > 0;
+    final bool hasNext = _currentIndex < widget.urls.length - 1;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: cardDark,
+        border: Border(
+          top: BorderSide(color: Colors.white.withOpacity(0.08)),
+        ),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Directionality(
+          textDirection: TextDirection.rtl,
+          child: Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed:
+                      hasPrev ? () => _loadAccount(_currentIndex - 1) : null,
+                  icon: const Icon(Icons.arrow_back_ios_rounded, size: 16),
+                  label: const Text('حساب قبلی'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: textPrimary,
+                    side: BorderSide(
+                      color: hasPrev
+                          ? primaryAccent.withOpacity(0.4)
+                          : Colors.white12,
+                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed:
+                      hasNext ? () => _loadAccount(_currentIndex + 1) : null,
+                  icon: const Icon(Icons.arrow_forward_ios_rounded, size: 16),
+                  label: const Text(
+                    'حساب بعدی',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: primaryAccent,
+                    foregroundColor: bgDark,
+                    disabledBackgroundColor: Colors.white10,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAccountDrawer() {
+    return Drawer(
+      backgroundColor: cardDark,
+      child: SafeArea(
+        child: Directionality(
+          textDirection: TextDirection.rtl,
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Container(
-                width: double.infinity,
-                padding: const EdgeInsets.only(top: 56, bottom: 24),
-                decoration: const BoxDecoration(
-                  color: bgDark,
-                  border:
-                      Border(bottom: BorderSide(color: surfaceDark, width: 2)),
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: bgDark.withOpacity(0.6),
+                  border: Border(
+                    bottom: BorderSide(color: Colors.white.withOpacity(0.08)),
+                  ),
                 ),
-                child: Column(
+                child: Row(
                   children: [
                     Container(
-                      width: 68,
-                      height: 68,
+                      padding: const EdgeInsets.all(10),
                       decoration: BoxDecoration(
+                        color: primaryAccent.withOpacity(0.15),
                         shape: BoxShape.circle,
-                        border: Border.all(color: primaryAccent, width: 1.5),
                       ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(10.0),
-                        child: Image.asset(
-                          'assets/nexus_icon.png',
-                          errorBuilder: (context, error, stackTrace) =>
-                              const Icon(Icons.link,
-                                  color: primaryAccent, size: 30),
-                        ),
-                      ),
+                      child: const Icon(Icons.manage_accounts_rounded,
+                          color: primaryAccent, size: 24),
                     ),
-                    const SizedBox(height: 14),
-                    const Text(
-                      'Nexus Link',
-                      style: TextStyle(
-                        color: textPrimary,
-                        fontSize: 19,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: primaryAccent.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Text(
-                        '${widget.urls.length} پیوند فعال',
-                        style: const TextStyle(
-                          color: primaryAccent,
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                        ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'فهرست حساب‌ها',
+                            style: TextStyle(
+                              color: textPrimary,
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'مجموع: ${widget.urls.length} پیوند',
+                            style: const TextStyle(
+                              color: textSecondary,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
@@ -2324,207 +3281,87 @@ class _BrowserScreenState extends State<BrowserScreen> {
               ),
               Expanded(
                 child: ListView.separated(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
                   itemCount: widget.urls.length,
-                  separatorBuilder: (context, index) =>
-                      Divider(color: bgDark.withOpacity(0.5), height: 1),
-                  itemBuilder: (context, index) {
-                    final isActive = index == _currentIndex;
+                  separatorBuilder: (_, __) => Divider(
+                    color: Colors.white.withOpacity(0.05),
+                    height: 1,
+                  ),
+                  itemBuilder: (context, idx) {
+                    final bool isSelected = idx == _currentIndex;
                     return ListTile(
-                      contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 20, vertical: 4),
-                      leading: Container(
-                        width: 32,
-                        height: 32,
-                        decoration: BoxDecoration(
-                          color: isActive ? primaryAccent : bgDark,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Center(
-                          child: Text(
-                            '${index + 1}',
-                            style: TextStyle(
-                              color: isActive ? bgDark : textSecondary,
-                              fontSize: 13,
-                              fontWeight: FontWeight.bold,
-                            ),
+                      selected: isSelected,
+                      selectedTileColor: primaryAccent.withOpacity(0.12),
+                      leading: CircleAvatar(
+                        radius: 16,
+                        backgroundColor:
+                            isSelected ? primaryAccent : Colors.white10,
+                        foregroundColor: isSelected ? bgDark : textSecondary,
+                        child: Text(
+                          '${idx + 1}',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
                           ),
                         ),
                       ),
                       title: Text(
-                        'حساب کاربری ${index + 1}',
+                        'حساب شماره ${idx + 1}',
                         style: TextStyle(
-                          color: isActive ? textPrimary : textSecondary,
+                          color: isSelected ? primaryAccent : textPrimary,
                           fontWeight:
-                              isActive ? FontWeight.bold : FontWeight.normal,
+                              isSelected ? FontWeight.bold : FontWeight.normal,
                           fontSize: 14,
                         ),
                       ),
-                      selected: isActive,
-                      selectedTileColor: primaryAccent.withOpacity(0.05),
+                      subtitle: Text(
+                        widget.urls[idx],
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textDirection: TextDirection.ltr,
+                        style: const TextStyle(
+                          color: textSecondary,
+                          fontSize: 11,
+                        ),
+                      ),
+                      trailing: isSelected
+                          ? const Icon(Icons.check_circle_rounded,
+                              color: primaryAccent, size: 20)
+                          : null,
                       onTap: () {
-                        Navigator.pop(context);
-                        if (!isActive) _loadAccount(index);
+                        Navigator.of(context).pop();
+                        if (idx != _currentIndex) {
+                          _loadAccount(idx);
+                        }
                       },
                     );
                   },
                 ),
               ),
-              const Divider(height: 1, color: bgDark),
-              ListTile(
-                leading: const Icon(Icons.exit_to_app_rounded,
-                    color: Colors.redAccent),
-                title: const Text(
-                  'بازگشت به صفحه اصلی',
-                  style: TextStyle(
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: OutlinedButton.icon(
+                  onPressed: _goBackToInput,
+                  icon: const Icon(Icons.edit_note_rounded,
+                      color: Colors.redAccent),
+                  label: const Text(
+                    'بازگشت به صفحه ورود پیوندها',
+                    style: TextStyle(
                       color: Colors.redAccent,
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold),
-                ),
-                onTap: () {
-                  Navigator.pop(context);
-                  Navigator.pop(context);
-                },
-              ),
-            ],
-          ),
-        ),
-        body: Stack(
-          children: [
-            InAppWebView(
-              initialUrlRequest: URLRequest(url: WebUri('about:blank')),
-              initialUserScripts: UnmodifiableListView<UserScript>([]),
-              initialSettings: InAppWebViewSettings(
-                javaScriptEnabled: true,
-                domStorageEnabled: true,
-                databaseEnabled: true,
-                cacheEnabled: true,
-                cacheMode: CacheMode.LOAD_DEFAULT,
-                clearCache: false,
-                clearSessionCache: false,
-                thirdPartyCookiesEnabled: true,
-                useHybridComposition: true,
-                supportZoom: false,
-                mediaPlaybackRequiresUserGesture: true,
-                allowsBackForwardNavigationGestures: false,
-              ),
-              onWebViewCreated: (controller) async {
-                _webViewController = controller;
-                if (_activeInjectionScript.isNotEmpty && !_isPreparingAccount) {
-                  await controller.addUserScript(
-                    userScript: UserScript(
-                      source: _activeInjectionScript,
-                      injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
-                      forMainFrameOnly: false,
+                      fontWeight: FontWeight.bold,
                     ),
-                  );
-                  await controller.loadUrl(
-                    urlRequest: URLRequest(url: WebUri('https://$storeHost/')),
-                  );
-                }
-              },
-              onLoadStart: (controller, url) async {
-                if (!mounted || url == null || _isPreparingAccount) return;
-                if (url.host.toLowerCase().contains('okala.com') &&
-                    _activeInjectionScript.isNotEmpty) {
-                  await controller.evaluateJavascript(
-                      source: _activeInjectionScript);
-                }
-              },
-              onProgressChanged: (controller, progress) async {
-                if (!mounted || _isPreparingAccount) return;
-                setState(() {
-                  _progress = progress / 100.0;
-                });
-                if (_activeInjectionScript.isNotEmpty && progress >= 15) {
-                  try {
-                    await controller.evaluateJavascript(
-                        source: _activeInjectionScript);
-                  } catch (_) {}
-                }
-                if (progress >= 80 && _isLoading && !_hasError) {
-                  setState(() {
-                    _isLoading = false;
-                  });
-                }
-              },
-              onLoadStop: (controller, url) async {
-                if (!mounted || url == null || _isPreparingAccount) return;
-                final String host = url.host.toLowerCase();
-                if (host.contains('okala.com')) {
-                  if (_activeInjectionScript.isNotEmpty) {
-                    await controller.evaluateJavascript(
-                        source: _activeInjectionScript);
-                  }
-                  if (mounted && _isLoading) {
-                    setState(() {
-                      _isLoading = false;
-                    });
-                  }
-                }
-              },
-              onReceivedError: (controller, request, error) {
-                if (request.isForMainFrame == true &&
-                    !_isPreparingAccount &&
-                    mounted) {
-                  setState(() {
-                    _isLoading = false;
-                  });
-                }
-              },
-            ),
-            if (_isLoading || _hasError)
-              Container(
-                color: bgDark,
-                padding: const EdgeInsets.all(24),
-                child: Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (!_hasError)
-                        const CircularProgressIndicator(
-                          color: primaryAccent,
-                          strokeWidth: 3,
-                        )
-                      else
-                        const Icon(
-                          Icons.wifi_off_rounded,
-                          color: Colors.redAccent,
-                          size: 48,
-                        ),
-                      const SizedBox(height: 24),
-                      Text(
-                        _loadingMessage,
-                        textAlign: TextAlign.center,
-                        textDirection: TextDirection.rtl,
-                        style: TextStyle(
-                          color: _hasError ? Colors.redAccent : textSecondary,
-                          fontWeight: FontWeight.w500,
-                          fontSize: 15,
-                        ),
-                      ),
-                      if (_hasError) ...[
-                        const SizedBox(height: 20),
-                        ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: primaryAccent,
-                            foregroundColor: bgDark,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
-                          onPressed: () => _loadAccount(_currentIndex),
-                          icon: const Icon(Icons.refresh_rounded, size: 18),
-                          label: const Text(
-                            'تلاش مجدد',
-                            style: TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                        ),
-                      ],
-                    ],
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    side: BorderSide(color: Colors.redAccent.withOpacity(0.4)),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
                   ),
                 ),
               ),
-          ],
+            ],
+          ),
         ),
       ),
     );
