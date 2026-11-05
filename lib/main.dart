@@ -1,3 +1,4 @@
+
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
@@ -480,39 +481,67 @@ class _BrowserScreenState extends State<BrowserScreen> {
   }
 
   /// تلاش برای رفرش مستقیم توکن از سرور اوکالا (مطابق منطق ربات Main1.py)
-  /// در صورتی که رفرش‌توکن منقضی شده باشد، بدون خطا از همان Access Token سالم فعلی استفاده می‌کند.
+  /// اگر رفرش‌توکن منقضی شده باشد (کد 400/401)، آن را حذف می‌کند تا کوکی منقضی به BFF اوکالا ارسال نشود.
   Future<Map<String, String?>> _tryRenewTokenIfPossible(
       String? accessToken, String? refreshToken) async {
     if (refreshToken == null || refreshToken.trim().isEmpty) {
-      return {'access_token': accessToken, 'refresh_token': refreshToken};
+      return {
+        'access_token': accessToken,
+        'refresh_token': null,
+        'refresh_valid': 'false',
+      };
     }
 
+    final String cleanRefresh = refreshToken.trim();
+    String? cleanAccess = accessToken?.trim();
+    if (cleanAccess != null &&
+        cleanAccess.toLowerCase().startsWith('bearer ')) {
+      cleanAccess = cleanAccess.substring(7).trim();
+    }
+
+    final Map<String, String> baseHeaders = {
+      'accept': 'application/json, text/plain, */*',
+      'source': 'okala',
+      'ui-version': '2.0',
+      'origin': 'https://www.okala.com',
+      'content-type': 'application/x-www-form-urlencoded',
+      'advertising_id': '',
+    };
+
+    final Map<String, String> bodyData = {
+      'grant_type': 'refresh_token',
+      'client_id': 'customer_client_id',
+      'client_secret': "u_M{'57j!%LI21#",
+      'scope': 'offline_access',
+      'refresh_token': cleanRefresh,
+    };
+
     try {
-      final Map<String, String> headers = {
-        'accept': 'application/json, text/plain, */*',
-        'source': 'okala',
-        'ui-version': '2.0',
-        'origin': 'https://www.okala.com',
-        'content-type': 'application/x-www-form-urlencoded',
-        'advertising_id': '',
-      };
-      if (accessToken != null && accessToken.trim().isNotEmpty) {
-        headers['Authorization'] = 'Bearer ${accessToken.trim()}';
+      final Map<String, String> headersWithAuth =
+          Map<String, String>.from(baseHeaders);
+      if (cleanAccess != null && cleanAccess.isNotEmpty) {
+        headersWithAuth['Authorization'] = 'Bearer $cleanAccess';
       }
 
-      final response = await _httpClient
+      http.Response response = await _httpClient
           .post(
             Uri.parse('https://apigateway.okala.com/api/v1/accounts/tokens'),
-            headers: headers,
-            body: {
-              'grant_type': 'refresh_token',
-              'client_id': 'customer_client_id',
-              'client_secret': "u_M{'57j!%LI21#",
-              'scope': 'offline_access',
-              'refresh_token': refreshToken.trim(),
-            },
+            headers: headersWithAuth,
+            body: bodyData,
           )
           .timeout(const Duration(seconds: 5));
+
+      // مطابق Main1.py: اگر به خاطر هدر Authorization خطای 401 داد، یک بار بدون هدر تست شود
+      if (response.statusCode == 401 &&
+          headersWithAuth.containsKey('Authorization')) {
+        response = await _httpClient
+            .post(
+              Uri.parse('https://apigateway.okala.com/api/v1/accounts/tokens'),
+              headers: baseHeaders,
+              body: bodyData,
+            )
+            .timeout(const Duration(seconds: 5));
+      }
 
       if (response.statusCode == 200) {
         final dynamic bodyJson = jsonDecode(utf8.decode(response.bodyBytes));
@@ -523,14 +552,27 @@ class _BrowserScreenState extends State<BrowserScreen> {
             return {
               'access_token': newAcc,
               'refresh_token':
-                  (newRef != null && newRef.isNotEmpty) ? newRef : refreshToken,
+                  (newRef != null && newRef.isNotEmpty) ? newRef : cleanRefresh,
+              'refresh_valid': 'true',
             };
           }
         }
       }
-    } catch (_) {}
 
-    return {'access_token': accessToken, 'refresh_token': refreshToken};
+      // اگر رفرش‌توکن منقضی یا نامعتبر است (مثلاً 400 یا 401)، نباید کوکی refresh_token ست شود
+      return {
+        'access_token': accessToken,
+        'refresh_token': null,
+        'refresh_valid': 'false',
+      };
+    } catch (_) {
+      // در صورت خطای شبکه هم کوکی رفرش‌توکن مشکوک را ارسال نمی‌کنیم تا توکن اصلی سالم بماند
+      return {
+        'access_token': accessToken,
+        'refresh_token': null,
+        'refresh_valid': 'false',
+      };
+    }
   }
 
   /// تکمیل و اصلاح تمام فیلدهای آبجکت user مطابق استاندارد ربات و سایت اوکالا
@@ -664,7 +706,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
     return rawValue;
   }
 
-  /// ساخت اسکریپت جامع تزریق و شبیه‌سازی پاسخ Refresh Token برای اکانت‌های با رفرش‌توکن منقضی
+  /// ساخت اسکریپت جامع تزریق، محافظت از BFF (/api/bff/v1/stores) و جلوگیری از لاگ‌اوت اکانت‌ها
   String _buildFastInjectionScript({
     required String targetKey,
     required List<Map<String, String>> localData,
@@ -688,10 +730,10 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
           var targetKey = __TARGET_KEY__;
           var items = __ITEMS_JSON__;
-          var tMs = __TOKEN_MS__;
-          var rTk = __REFRESH_TOKEN__;
-          var uCk = __USER_COOKIE__;
-          var uJson = __USER_PLAIN_JSON__;
+          var initTMs = __TOKEN_MS__;
+          var initRTk = __REFRESH_TOKEN__;
+          var initUCk = __USER_COOKIE__;
+          var initUJson = __USER_PLAIN_JSON__;
 
           if (!window.__nxOrigApi) {
             window.__nxOrigApi = {
@@ -700,7 +742,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
               clear: Storage.prototype.clear,
               atob: window.atob ? window.atob.bind(window) : null,
               cookieDesc: Object.getOwnPropertyDescriptor(Document.prototype, 'cookie') ||
-                          Object.getOwnPropertyDescriptor(HTMLDocument.prototype, 'cookie')
+                          Object.getOwnPropertyDescriptor(HTMLDocument.prototype, 'cookie'),
+              pushState: window.history && window.history.pushState ? window.history.pushState.bind(window.history) : null,
+              replaceState: window.history && window.history.replaceState ? window.history.replaceState.bind(window.history) : null
             };
           }
 
@@ -733,6 +777,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
               raw = raw.replace(/(\\"stateCode\\"\s*:\s*)0/g, '$11');
               raw = raw.replace(/("isLoggedIn"\s*:\s*)false/g, '$1true');
               raw = raw.replace(/(\\"isLoggedIn\\"\s*:\s*)false/g, '$1true');
+              raw = raw.replace(/("unauthorizedRequest"\s*:\s*)true/g, '$1false');
+              raw = raw.replace(/(\\"unauthorizedRequest\\"\s*:\s*)true/g, '$1false');
               if (wantUrlEncoded === true) return encodeURIComponent(raw);
               if (wantUrlEncoded === false) return raw;
               return isUrlEncoded ? encodeURIComponent(raw) : raw;
@@ -755,6 +801,11 @@ class _BrowserScreenState extends State<BrowserScreen> {
                 obj.StateCode = 1;
                 obj.HasName = true;
               }
+              if ('unauthorizedRequest' in obj && obj.unauthorizedRequest === true) {
+                obj.unauthorizedRequest = false;
+                if ('success' in obj) obj.success = true;
+                if ('error' in obj) obj.error = null;
+              }
               if (obj.data && typeof obj.data === 'object') {
                 fixUserStatusesInObject(obj.data);
               }
@@ -768,56 +819,114 @@ class _BrowserScreenState extends State<BrowserScreen> {
             return obj;
           }
 
+          var parsedUserObj = {};
+          try {
+            parsedUserObj = JSON.parse(initUJson || decodeURIComponent(initUCk));
+          } catch (_) {}
+
+          var parsedUserInfoPascal = {
+            Id: parsedUserObj.id || 0,
+            AlternativeId: parsedUserObj.alternativeId || '',
+            AlternativeCustomerId: parsedUserObj.alternativeCustomerId || parsedUserObj.id || 0,
+            FirstName: parsedUserObj.firstName || 'کاربر',
+            LastName: parsedUserObj.lastName || 'اکالا',
+            GenderCode: parsedUserObj.genderCode || 1,
+            EmailAddress: parsedUserObj.emailAddress || '',
+            UserName: parsedUserObj.userName || parsedUserObj.mobilePhone || '',
+            MobilePhone: parsedUserObj.mobilePhone || '',
+            StateCode: 1,
+            CustomerIsLoggedInForFirstTime: false,
+            FirstLoginDateTime: '',
+            State: true,
+            HasAddress: Boolean(parsedUserObj.hasAddress),
+            HasName: true,
+            BirthDateEpoch: parsedUserObj.birthDateEpoch || 1005683400
+          };
+
+          // ذخیره وضعیت اکانت فعال در سطح window تا تمام Interceptorها همیشه آخرین اکانت را بخوانند
+          var prevKey = window.__nxState ? window.__nxState.targetKey : null;
+          window.__nxState = {
+            targetKey: targetKey,
+            items: items,
+            tMs: initTMs,
+            rTk: initRTk,
+            uCk: initUCk,
+            uJson: initUJson,
+            savedUserObj: parsedUserObj,
+            savedUserInfoPascal: parsedUserInfoPascal,
+            savedPersistRoot: (prevKey === targetKey && window.__nxState && window.__nxState.savedPersistRoot)
+              ? window.__nxState.savedPersistRoot
+              : null
+          };
+
+          function syncCookiesNow() {
+            try {
+              var st = window.__nxState;
+              if (!st) return;
+              if (st.tMs) {
+                setRawCookie('tokenMS=' + st.tMs + '; path=/; max-age=7776000; SameSite=Lax');
+                setRawCookie('token=' + st.tMs + '; path=/; max-age=7776000; SameSite=Lax');
+                setRawCookie('tokenMS=' + st.tMs + '; domain=.okala.com; path=/; max-age=7776000; Secure; SameSite=None');
+                setRawCookie('token=' + st.tMs + '; domain=.okala.com; path=/; max-age=7776000; Secure; SameSite=None');
+              }
+              if (st.uCk) {
+                var cleanUCk = fixUserStatusesInString(st.uCk, true);
+                setRawCookie('user=' + cleanUCk + '; path=/; max-age=7776000; SameSite=Lax');
+                setRawCookie('user=' + cleanUCk + '; domain=.okala.com; path=/; max-age=7776000; Secure; SameSite=None');
+              }
+              if (st.rTk) {
+                setRawCookie('refresh_token=' + st.rTk + '; domain=.okala.com; path=/; max-age=7776000; Secure; SameSite=None');
+              } else {
+                // پاکسازی هرگونه کوکی منقضی refresh_token تا BFF اوکالا نشست را باطل نکند
+                setRawCookie('refresh_token=; path=/; max-age=0');
+                setRawCookie('refresh_token=; domain=.okala.com; path=/; max-age=0; Secure; SameSite=None');
+              }
+            } catch (_) {}
+          }
+
           function applyAuthState(forceClear) {
             try {
+              var st = window.__nxState;
+              if (!st) return;
               if (forceClear) {
                 origClear.call(localStorage);
                 origClear.call(sessionStorage);
               }
 
-              if (Array.isArray(items)) {
-                for (var i = 0; i < items.length; i++) {
-                  var item = items[i];
+              if (Array.isArray(st.items)) {
+                for (var i = 0; i < st.items.length; i++) {
+                  var item = st.items[i];
                   if (!item || !item.name) continue;
                   var k = String(item.name);
+                  if (k === 'refresh_token' && !st.rTk) continue;
                   var v = item.value != null ? String(item.value) : '';
                   if (k === 'user') {
                     v = fixUserStatusesInString(v, true);
                   } else if (k === 'persist:root') {
                     v = fixUserStatusesInString(v, false);
+                    st.savedPersistRoot = v;
                   }
                   origSetItem.call(localStorage, k, v);
                 }
               }
 
-              if (tMs !== '') {
-                origSetItem.call(localStorage, 'tokenMS', tMs);
-                origSetItem.call(localStorage, 'token', tMs);
+              if (st.tMs !== '') {
+                origSetItem.call(localStorage, 'tokenMS', st.tMs);
+                origSetItem.call(localStorage, 'token', st.tMs);
               }
-              if (rTk !== '') {
-                origSetItem.call(localStorage, 'refresh_token', rTk);
+              if (st.rTk !== '') {
+                origSetItem.call(localStorage, 'refresh_token', st.rTk);
+              } else {
+                origRemoveItem.call(localStorage, 'refresh_token');
               }
-              if (uCk !== '') {
-                origSetItem.call(localStorage, 'user', fixUserStatusesInString(uCk, true));
+              if (st.uCk !== '') {
+                origSetItem.call(localStorage, 'user', fixUserStatusesInString(st.uCk, true));
               }
 
-              origSetItem.call(localStorage, '__nx_active_key', targetKey);
-              origSetItem.call(sessionStorage, targetKey, '1');
+              origSetItem.call(localStorage, '__nx_active_key', st.targetKey);
+              origSetItem.call(sessionStorage, st.targetKey, '1');
 
-              if (tMs !== '') {
-                setRawCookie('tokenMS=' + tMs + '; path=/; max-age=7776000; SameSite=Lax');
-                setRawCookie('token=' + tMs + '; path=/; max-age=7776000; SameSite=Lax');
-                setRawCookie('tokenMS=' + tMs + '; domain=.okala.com; path=/; max-age=7776000; Secure; SameSite=None');
-                setRawCookie('token=' + tMs + '; domain=.okala.com; path=/; max-age=7776000; Secure; SameSite=None');
-              }
-              if (uCk !== '') {
-                var cleanUCk = fixUserStatusesInString(uCk, true);
-                setRawCookie('user=' + cleanUCk + '; path=/; max-age=7776000; SameSite=Lax');
-                setRawCookie('user=' + cleanUCk + '; domain=.okala.com; path=/; max-age=7776000; Secure; SameSite=None');
-              }
-              if (rTk !== '') {
-                setRawCookie('refresh_token=' + rTk + '; domain=.okala.com; path=/; max-age=7776000; Secure; SameSite=None');
-              }
+              syncCookiesNow();
             } catch (_) {}
           }
 
@@ -834,96 +943,381 @@ class _BrowserScreenState extends State<BrowserScreen> {
           } else {
             if (!localStorage.getItem('token') || !localStorage.getItem('user') || !localStorage.getItem('persist:root')) {
               applyAuthState(false);
+            } else if (!window.__nxState.savedPersistRoot) {
+              window.__nxState.savedPersistRoot = localStorage.getItem('persist:root');
+            }
+            syncCookiesNow();
+          }
+
+          function isTokenRefreshUrl(urlStr) {
+            var lower = String(urlStr || '').toLowerCase();
+            return lower.indexOf('/accounts/tokens') !== -1 ||
+                   lower.indexOf('/account/tokens') !== -1 ||
+                   lower.indexOf('connect/token') !== -1 ||
+                   lower.indexOf('refreshtoken') !== -1 ||
+                   lower.indexOf('refresh_token') !== -1 ||
+                   lower.indexOf('refresh-token') !== -1;
+          }
+
+          function isBffUrl(urlStr) {
+            var lower = String(urlStr || '').toLowerCase();
+            return lower.indexOf('/api/bff/') !== -1;
+          }
+
+          function shouldAttachBearerHeader(urlStr) {
+            var lower = String(urlStr || '').toLowerCase();
+            if (lower.indexOf('apigateway.okala.com') === -1) return false;
+            if (lower.indexOf('/api/frontend') !== -1) return false;
+            return true;
+          }
+
+          function buildDefaultAddressData() {
+            return {
+              success: true,
+              hasValidationError: false,
+              message: null,
+              data: {
+                customerAddressResponseItems: [],
+                hasNextPage: false,
+                hasPreviousPage: false,
+                pageIndex: 1,
+                pageSize: 1,
+                totalCount: 0,
+                totalPages: 0
+              },
+              errorCode: null
+            };
+          }
+
+          function buildSyntheticTokenResponse() {
+            var st = window.__nxState || {};
+            var tok = st.tMs || '';
+            var ref = st.rTk || 'nx_keep_alive_refresh_token';
+            var uObj = st.savedUserObj || {};
+            var uPascal = st.savedUserInfoPascal || {};
+            return JSON.stringify({
+              access_token: tok,
+              token: tok,
+              tokenMS: tok,
+              refresh_token: ref,
+              expires_in: 36000,
+              token_type: 'Bearer',
+              scope: 'email openid phone profile offline_access',
+              UserInfo: uPascal,
+              user: uObj,
+              data: {
+                access_token: tok,
+                token: tok,
+                refresh_token: ref,
+                expires_in: 36000,
+                token_type: 'Bearer',
+                UserInfo: uPascal,
+                user: uObj
+              },
+              success: true,
+              isSuccess: true,
+              status: true,
+              statusCode: 200
+            });
+          }
+
+          function makeMetaSucceeded(routeId) {
+            return {
+              status: 'succeeded',
+              durationMilliseconds: 12,
+              yarpRouteId: routeId || 'okala.bff',
+              error: null,
+              statusCode: null,
+              response: null
+            };
+          }
+
+          // تعمیر پاسخ BFF (/api/bff/v1/stores) بر اساس ساختار دقیق لاگ شبکه اوکالا
+          function repairBffObject(bffObj) {
+            if (!bffObj || typeof bffObj !== 'object') return bffObj;
+            try {
+              var st = window.__nxState || {};
+              bffObj.partial = false;
+
+              if (bffObj.auth && typeof bffObj.auth === 'object') {
+                var newTok = bffObj.auth.access_token || bffObj.auth.accessToken || bffObj.auth.token || bffObj.auth.tokenMS;
+                if (typeof newTok === 'string' && newTok.length > 20) {
+                  st.tMs = newTok;
+                  origSetItem.call(localStorage, 'token', newTok);
+                  origSetItem.call(localStorage, 'tokenMS', newTok);
+                  syncCookiesNow();
+                }
+              }
+              // در وضعیت سالم، فیلد auth در پاسخ BFF برابر null است
+              bffObj.auth = null;
+
+              if (!bffObj.meta || typeof bffObj.meta !== 'object') {
+                bffObj.meta = {};
+              }
+              var metaRoutes = {
+                address: 'cerberus.getcustomeraddresseswithpaging',
+                userMe: 'cerberus.users.me',
+                loyalty: 'users.loyality',
+                popularBrands: 'get-api-azarakhsh-Brand-GetPopularBrands',
+                lastOrderWithoutCsat: 'Last.Order.Without.CSAT',
+                campaignModal: 'get_modal_notification',
+                shoppingListWhitelist: 'ShoppingList.CheckWhitelist',
+                customerDiscounts: 'discount.customer.id',
+                notifications: 'get_user_notification_list',
+                shoppingListHasItems: 'ShoppingList.HasItems',
+                stores: 'store_rank_get_all_stores_okala_v4',
+                shoppingCart: 'Basket.ShoppingCartV2.GetCustomerShoppingCartItems',
+                buyAgain: 'home',
+                slider: 'get-api-azarakhsh-media-widgets-relevant',
+                navOffer: 'get-api-azarakhsh-media-widgets-relevant',
+                carousels: 'offers_get',
+                announcement: 'titanic_cityannouncement'
+              };
+
+              var metaKeys = Object.keys(bffObj.meta);
+              for (var i = 0; i < metaKeys.length; i++) {
+                var mk = metaKeys[i];
+                var mItem = bffObj.meta[mk];
+                if (mItem && typeof mItem === 'object') {
+                  mItem.status = 'succeeded';
+                  mItem.error = null;
+                  mItem.statusCode = null;
+                  mItem.response = null;
+                } else {
+                  bffObj.meta[mk] = makeMetaSucceeded(metaRoutes[mk]);
+                }
+              }
+              var reqMetaKeys = ['address', 'userMe', 'loyalty', 'lastOrderWithoutCsat', 'campaignModal', 'shoppingListWhitelist', 'customerDiscounts', 'shoppingListHasItems', 'shoppingCart', 'buyAgain'];
+              for (var j = 0; j < reqMetaKeys.length; j++) {
+                var rmk = reqMetaKeys[j];
+                if (!bffObj.meta[rmk]) {
+                  bffObj.meta[rmk] = makeMetaSucceeded(metaRoutes[rmk]);
+                }
+              }
+
+              if (!bffObj.data || typeof bffObj.data !== 'object') {
+                bffObj.data = {};
+              }
+              var d = bffObj.data;
+
+              if (!d.userMe || typeof d.userMe !== 'object' || d.userMe.unauthorizedRequest || d.userMe.statusCode === 401 || d.userMe.success === false) {
+                d.userMe = { OrganicOrders: 0, BakeryOrders: 0, SuperfruitOrders: 0 };
+              } else {
+                fixUserStatusesInObject(d.userMe);
+              }
+
+              if (!d.address || typeof d.address !== 'object' || d.address.success === false || d.address.unauthorizedRequest) {
+                d.address = buildDefaultAddressData();
+              }
+
+              if (!d.loyalty || typeof d.loyalty !== 'object' || d.loyalty.success === false || d.loyalty.unauthorizedRequest) {
+                d.loyalty = { success: true, message: '', data: { loyality: null, seen: false } };
+              }
+
+              if (d.lastOrderWithoutCsat === undefined) {
+                d.lastOrderWithoutCsat = null;
+              }
+              if (d.campaignModal === undefined) {
+                d.campaignModal = null;
+              }
+
+              if (!d.shoppingListWhitelist || typeof d.shoppingListWhitelist !== 'object' || d.shoppingListWhitelist.unauthorizedRequest || d.shoppingListWhitelist.success === false) {
+                d.shoppingListWhitelist = {
+                  result: true,
+                  targetUrl: null,
+                  success: true,
+                  error: null,
+                  unauthorizedRequest: false,
+                  __wrapped: true,
+                  __traceId: null
+                };
+              }
+
+              if (!d.shoppingListHasItems || typeof d.shoppingListHasItems !== 'object' || d.shoppingListHasItems.unauthorizedRequest || d.shoppingListHasItems.success === false) {
+                d.shoppingListHasItems = {
+                  result: false,
+                  targetUrl: null,
+                  success: true,
+                  error: null,
+                  unauthorizedRequest: false,
+                  __wrapped: true,
+                  __traceId: null
+                };
+              }
+
+              if (!d.customerDiscounts || typeof d.customerDiscounts !== 'object' || d.customerDiscounts.success === false || d.customerDiscounts.unauthorizedRequest) {
+                d.customerDiscounts = {
+                  data: [],
+                  success: true,
+                  message: null,
+                  hasValidationError: false,
+                  errorCode: null,
+                  businessErrorCode: null
+                };
+              }
+
+              if (!d.shoppingCart || typeof d.shoppingCart !== 'object' || d.shoppingCart.success === false || d.shoppingCart.unauthorizedRequest) {
+                d.shoppingCart = {
+                  data: {
+                    total: 0,
+                    result: [],
+                    debtTrackingNumber: 0,
+                    debtAmount: 0,
+                    hasMaximumDebt: false,
+                    canDownloadPrefactor: false
+                  },
+                  success: true,
+                  errorMessage: null,
+                  errorCode: null,
+                  errorData: null
+                };
+              }
+
+              if (!Array.isArray(d.buyAgain)) {
+                d.buyAgain = [];
+              }
+
+              if ('notifications' in d && (!d.notifications || typeof d.notifications !== 'object' || !d.notifications.data)) {
+                d.notifications = {
+                  data: {
+                    items: [],
+                    totalCount: 0,
+                    newMessageCount: 0,
+                    pageSize: 1,
+                    currentPage: 1,
+                    hasNextPage: false,
+                    hasPreviousPage: false
+                  }
+                };
+              }
+            } catch (_) {}
+            return bffObj;
+          }
+
+          function repairBffResponseText(txt) {
+            try {
+              var parsed = JSON.parse(txt);
+              var repaired = repairBffObject(parsed);
+              return JSON.stringify(repaired);
+            } catch (_) {
+              return txt;
             }
           }
 
-          // ۲. نصب لایه‌های محافظ روی window فعلی
-          if (window.__nxProtectedKey !== targetKey) {
-            window.__nxProtectedKey = targetKey;
+          function buildFallbackApiResponse(urlStr) {
+            var lower = String(urlStr || '').toLowerCase();
+            var st = window.__nxState || {};
+            var uObj = st.savedUserObj || {};
+            var uPascal = st.savedUserInfoPascal || {};
 
-            var savedPersistRoot = localStorage.getItem('persist:root');
-            var savedUserObj = {};
-            try {
-              savedUserObj = JSON.parse(uJson || decodeURIComponent(uCk));
-            } catch (_) {}
-
-            var savedUserInfoPascal = {
-              Id: savedUserObj.id || 0,
-              AlternativeId: savedUserObj.alternativeId || '',
-              AlternativeCustomerId: savedUserObj.alternativeCustomerId || savedUserObj.id || 0,
-              FirstName: savedUserObj.firstName || 'کاربر',
-              LastName: savedUserObj.lastName || 'اکالا',
-              GenderCode: savedUserObj.genderCode || 1,
-              EmailAddress: savedUserObj.emailAddress || '',
-              UserName: savedUserObj.userName || savedUserObj.mobilePhone || '',
-              MobilePhone: savedUserObj.mobilePhone || '',
-              StateCode: 1,
-              CustomerIsLoggedInForFirstTime: false,
-              FirstLoginDateTime: '',
-              State: true,
-              HasAddress: Boolean(savedUserObj.hasAddress),
-              HasName: true,
-              BirthDateEpoch: savedUserObj.birthDateEpoch || 1005683400
-            };
-
-            function isTokenRefreshUrl(urlStr) {
-              var lower = String(urlStr || '').toLowerCase();
-              return lower.indexOf('/accounts/tokens') !== -1 ||
-                     lower.indexOf('/account/tokens') !== -1 ||
-                     lower.indexOf('connect/token') !== -1 ||
-                     lower.indexOf('refreshtoken') !== -1 ||
-                     lower.indexOf('refresh_token') !== -1 ||
-                     lower.indexOf('refresh-token') !== -1 ||
-                     lower.indexOf('cerberus') !== -1;
+            if (isTokenRefreshUrl(lower)) {
+              return buildSyntheticTokenResponse();
             }
-
-            function buildSyntheticTokenResponse() {
+            if (isBffUrl(lower)) {
+              return JSON.stringify(repairBffObject({
+                partial: false,
+                durationMilliseconds: 120,
+                data: {},
+                meta: {},
+                auth: null
+              }));
+            }
+            if (lower.indexOf('getcountopenordersforreact') !== -1) {
               return JSON.stringify({
-                access_token: tMs,
-                token: tMs,
-                tokenMS: tMs,
-                refresh_token: rTk || 'nx_keep_alive_refresh_token',
-                expires_in: 36000,
-                token_type: 'Bearer',
-                scope: 'email openid phone profile offline_access',
-                UserInfo: savedUserInfoPascal,
-                user: savedUserObj,
+                success: true,
+                hasValidationError: false,
+                message: null,
+                data: 0,
+                errorCode: null
+              });
+            }
+            if (lower.indexOf('getcustomershoppingcartitems') !== -1) {
+              return JSON.stringify({
                 data: {
-                  access_token: tMs,
-                  token: tMs,
-                  refresh_token: rTk || 'nx_keep_alive_refresh_token',
-                  expires_in: 36000,
-                  token_type: 'Bearer',
-                  UserInfo: savedUserInfoPascal,
-                  user: savedUserObj
+                  total: 0,
+                  result: [],
+                  debtTrackingNumber: 0,
+                  debtAmount: 0,
+                  hasMaximumDebt: false,
+                  canDownloadPrefactor: false
                 },
                 success: true,
-                isSuccess: true,
-                status: true,
-                statusCode: 200
+                errorMessage: null,
+                errorCode: null,
+                errorData: null
               });
             }
-
-            function buildFallbackApiResponse(urlStr) {
-              if (isTokenRefreshUrl(urlStr)) {
-                return buildSyntheticTokenResponse();
-              }
+            if (lower.indexOf('bnpl/status') !== -1) {
               return JSON.stringify({
-                data: savedUserObj,
-                user: savedUserObj,
-                UserInfo: savedUserInfoPascal,
-                success: true,
-                isSuccess: true,
-                status: true,
-                statusCode: 200,
-                message: 'OK'
+                data: {
+                  status: 'InEligible',
+                  requiresKyc: false,
+                  hasDebt: false,
+                  shouldDisplay: false
+                },
+                success: true
               });
             }
+            if (lower.indexOf('get-orders-state') !== -1) {
+              return JSON.stringify({ data: null, success: true });
+            }
+            if (lower.indexOf('saveuserinfo') !== -1) {
+              return 'false';
+            }
+            if (lower.indexOf('getcustomeraddresseswithpaging') !== -1 || lower.indexOf('customeraddressforreact') !== -1) {
+              return JSON.stringify(buildDefaultAddressData());
+            }
+            if (lower.indexOf('discounts/customer') !== -1) {
+              return JSON.stringify({
+                data: [],
+                success: true,
+                message: null,
+                hasValidationError: false,
+                errorCode: null,
+                businessErrorCode: null
+              });
+            }
+            if (lower.indexOf('customerorders/list') !== -1) {
+              return JSON.stringify({
+                success: true,
+                data: {
+                  items: [],
+                  totalCount: 0,
+                  pageNumber: 1,
+                  pageSize: 10
+                }
+              });
+            }
+            if (lower.indexOf('users/me') !== -1) {
+              return JSON.stringify({
+                OrganicOrders: 0,
+                BakeryOrders: 0,
+                SuperfruitOrders: 0,
+                id: uObj.id || 0,
+                user: uObj,
+                UserInfo: uPascal,
+                success: true
+              });
+            }
+            return JSON.stringify({
+              data: uObj,
+              user: uObj,
+              UserInfo: uPascal,
+              success: true,
+              isSuccess: true,
+              status: true,
+              statusCode: 200,
+              unauthorizedRequest: false,
+              message: null
+            });
+          }
+
+          // ۲. نصب لایه‌های محافظ سراسری روی window (همیشه متصل به window.__nxState)
+          if (!window.__nxInterceptorsInstalled) {
+            window.__nxInterceptorsInstalled = true;
 
             // الف) محافظت از بررسی انقضای JWT در سمت کلاینت (window.atob)
-            // باعث می‌شود سایت اوکالا همیشه توکن را دارای ۲۴ ساعت اعتبار ببیند و درخواست رفرش‌توکن ندهد
-            if (origAtob && !window.__nxAtobWrapped) {
-              window.__nxAtobWrapped = true;
+            if (origAtob) {
               window.atob = function(b64) {
                 var decoded = origAtob(b64);
                 if (decoded && decoded.indexOf('"exp"') !== -1 &&
@@ -945,13 +1339,14 @@ class _BrowserScreenState extends State<BrowserScreen> {
             Storage.prototype.setItem = function(key, value) {
               var k = String(key);
               var v = String(value);
+              var st = window.__nxState;
 
-              if (this === localStorage) {
+              if (this === localStorage && st) {
                 if (k === 'token' || k === 'tokenMS') {
                   if (!v || v === 'null' || v === 'undefined' || v.length < 20) {
                     return;
                   }
-                  tMs = v;
+                  st.tMs = v;
                 } else if (k === 'user') {
                   if (!v || v === 'null' || v === 'undefined' || v === '{}' || v === '%7B%7D') {
                     return;
@@ -974,14 +1369,14 @@ class _BrowserScreenState extends State<BrowserScreen> {
                           parsedUserSlice.user.customerIsLoggedInForFirstTime = false;
                           parsedUserSlice.user.state = true;
                           parsedUserSlice.user.stateCode = 1;
-                          if (tMs) {
-                            parsedUserSlice.user.token = tMs;
+                          if (st.tMs) {
+                            parsedUserSlice.user.token = st.tMs;
                           }
                           parsedRoot.user = JSON.stringify(parsedUserSlice);
                         }
                       }
-                      if (shouldRestoreUser && savedPersistRoot) {
-                        var prevRoot = JSON.parse(savedPersistRoot);
+                      if (shouldRestoreUser && st.savedPersistRoot) {
+                        var prevRoot = JSON.parse(st.savedPersistRoot);
                         if (prevRoot && prevRoot.user) {
                           parsedRoot.user = prevRoot.user;
                         }
@@ -994,7 +1389,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
                         }
                       }
                       v = JSON.stringify(parsedRoot);
-                      savedPersistRoot = v;
+                      st.savedPersistRoot = v;
                     }
                   } catch (_) {}
                 }
@@ -1027,8 +1422,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   },
                   set: function(val) {
                     var str = String(val).trim();
+                    var st = window.__nxState;
                     var eqIdx = str.indexOf('=');
-                    if (eqIdx !== -1) {
+                    if (eqIdx !== -1 && st) {
                       var cName = str.substring(0, eqIdx).trim();
                       var rest = str.substring(eqIdx + 1);
                       var semiIdx = rest.indexOf(';');
@@ -1044,7 +1440,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
                           return;
                         }
                         if ((cName === 'token' || cName === 'tokenMS') && cVal.length > 20) {
-                          tMs = cVal;
+                          st.tMs = cVal;
                         }
                         if (cName === 'user') {
                           var suffix = semiIdx !== -1 ? rest.substring(semiIdx) : '; path=/; max-age=7776000; SameSite=Lax';
@@ -1058,18 +1454,18 @@ class _BrowserScreenState extends State<BrowserScreen> {
               } catch (_) {}
             }
 
-            // د) شبیه‌سازی پاسخ موفق برای /api/v1/accounts/tokens و سپر ضد 401 در window.fetch
-            if (window.fetch && !window.__nxFetchWrapped) {
-              window.__nxFetchWrapped = true;
+            // د) محافظت از window.fetch (به‌ویژه روی BFF اوکالا /api/bff/v1/stores و رفرش‌توکن)
+            if (window.fetch) {
               var origFetch = window.fetch;
               window.fetch = function(input, init) {
+                var st = window.__nxState || {};
+                var curTMs = st.tMs || '';
                 var urlStr = '';
                 try {
                   urlStr = (typeof input === 'string') ? input : (input && input.url ? input.url : String(input));
                 } catch (_) {}
 
-                // اگر سایت درخواست رفرش‌توکن به /api/v1/accounts/tokens فرستاد، بلافاصله توکن فعال را با کد 200 برگردان
-                if (tMs && isTokenRefreshUrl(urlStr)) {
+                if (curTMs && isTokenRefreshUrl(urlStr)) {
                   return Promise.resolve(new Response(buildSyntheticTokenResponse(), {
                     status: 200,
                     statusText: 'OK',
@@ -1077,13 +1473,14 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   }));
                 }
 
-                if (tMs && urlStr.indexOf('okala.com') !== -1) {
+                // فقط به درخواست‌های apigateway.okala.com (به‌جز /api/frontend) هدر Authorization اضافه شود
+                if (curTMs && shouldAttachBearerHeader(urlStr)) {
                   try {
                     init = init ? Object.assign({}, init) : {};
                     var hdrs = new Headers(init.headers || (typeof input !== 'string' && input && input.headers ? input.headers : undefined));
                     var curAuth = hdrs.get('Authorization') || hdrs.get('authorization');
                     if (!curAuth || curAuth.indexOf('null') !== -1 || curAuth.indexOf('undefined') !== -1 || curAuth.trim() === 'Bearer') {
-                      hdrs.set('Authorization', 'Bearer ' + tMs);
+                      hdrs.set('Authorization', 'Bearer ' + curTMs);
                     }
                     init.headers = hdrs;
                   } catch (_) {}
@@ -1091,20 +1488,43 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
                 return origFetch.call(this, input, init).then(function(response) {
                   try {
-                    var st = response.status;
-                    if (st === 401 || st === 403 || (isTokenRefreshUrl(urlStr) && st >= 400)) {
+                    if (urlStr.indexOf('okala.com') !== -1) {
+                      syncCookiesNow();
+                    }
+
+                    var status = response.status;
+                    if (status === 401 || status === 403 || ((isTokenRefreshUrl(urlStr) || isBffUrl(urlStr)) && status >= 400)) {
                       return new Response(buildFallbackApiResponse(urlStr), {
                         status: 200,
                         statusText: 'OK',
-                        headers: { 'Content-Type': 'application/json' }
+                        headers: { 'Content-Type': 'application/json; charset=utf-8' }
                       });
+                    }
+
+                    if (isBffUrl(urlStr)) {
+                      var bffClone = response.clone();
+                      return bffClone.text().then(function(txt) {
+                        var repairedBff = repairBffResponseText(txt);
+                        return new Response(repairedBff, {
+                          status: 200,
+                          statusText: 'OK',
+                          headers: response.headers
+                        });
+                      }).catch(function() { return response; });
                     }
 
                     var cType = response.headers && response.headers.get ? (response.headers.get('content-type') || '') : '';
                     if (cType.indexOf('application/json') !== -1) {
                       var clone = response.clone();
                       return clone.text().then(function(txt) {
-                        if (txt && (txt.indexOf('customerIsLoggedInForFirstTime') !== -1 || txt.indexOf('CustomerIsLoggedInForFirstTime') !== -1 || txt.indexOf('"state":false') !== -1 || txt.indexOf('"state": false') !== -1)) {
+                        if (txt && (
+                            txt.indexOf('customerIsLoggedInForFirstTime') !== -1 ||
+                            txt.indexOf('CustomerIsLoggedInForFirstTime') !== -1 ||
+                            txt.indexOf('"state":false') !== -1 ||
+                            txt.indexOf('"state": false') !== -1 ||
+                            txt.indexOf('"unauthorizedRequest":true') !== -1 ||
+                            txt.indexOf('"unauthorizedRequest": true') !== -1
+                        )) {
                           var fixedTxt = fixUserStatusesInString(txt, false);
                           return new Response(fixedTxt, {
                             status: response.status,
@@ -1118,11 +1538,11 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   } catch (_) {}
                   return response;
                 }).catch(function(err) {
-                  if (tMs && isTokenRefreshUrl(urlStr)) {
-                    return new Response(buildSyntheticTokenResponse(), {
+                  if (curTMs && (isTokenRefreshUrl(urlStr) || isBffUrl(urlStr))) {
+                    return new Response(buildFallbackApiResponse(urlStr), {
                       status: 200,
                       statusText: 'OK',
-                      headers: { 'Content-Type': 'application/json' }
+                      headers: { 'Content-Type': 'application/json; charset=utf-8' }
                     });
                   }
                   throw err;
@@ -1130,9 +1550,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
               };
             }
 
-            // هـ) سپر همگام در XMLHttpRequest (برای Axios) روی /api/v1/accounts/tokens و کدهای 400/401/403
-            if (window.XMLHttpRequest && !window.__nxXhrWrapped) {
-              window.__nxXhrWrapped = true;
+            // هـ) محافظت همگام در XMLHttpRequest (برای Axios) روی تمامی APIهای apigateway.okala.com
+            if (window.XMLHttpRequest) {
               var origOpen = XMLHttpRequest.prototype.open;
               var origSend = XMLHttpRequest.prototype.send;
               var origSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
@@ -1153,7 +1572,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
                       configurable: true,
                       get: function() {
                         var realStatus = statusProtoDesc.get.call(self);
-                        if (realStatus === 401 || realStatus === 403 || (isTokenRefreshUrl(self.__nxUrl) && (realStatus >= 400 || realStatus === 0))) {
+                        if (realStatus === 401 || realStatus === 403 || (isTokenRefreshUrl(self.__nxUrl) && realStatus >= 400)) {
                           return 200;
                         }
                         return realStatus;
@@ -1165,7 +1584,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
                       configurable: true,
                       get: function() {
                         var realStatus = statusProtoDesc ? statusProtoDesc.get.call(self) : 200;
-                        if (realStatus === 401 || realStatus === 403 || (isTokenRefreshUrl(self.__nxUrl) && (realStatus >= 400 || realStatus === 0))) {
+                        if (realStatus === 401 || realStatus === 403 || (isTokenRefreshUrl(self.__nxUrl) && realStatus >= 400)) {
                           return 'OK';
                         }
                         return statusTextProtoDesc.get.call(self);
@@ -1177,7 +1596,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
                       configurable: true,
                       get: function() {
                         var realStatus = statusProtoDesc ? statusProtoDesc.get.call(self) : 200;
-                        if (realStatus === 401 || realStatus === 403 || (isTokenRefreshUrl(self.__nxUrl) && (realStatus >= 400 || realStatus === 0))) {
+                        if (realStatus === 401 || realStatus === 403 || (isTokenRefreshUrl(self.__nxUrl) && realStatus >= 400)) {
                           return buildFallbackApiResponse(self.__nxUrl);
                         }
                         var rawTxt = '';
@@ -1189,7 +1608,17 @@ class _BrowserScreenState extends State<BrowserScreen> {
                         if (isTokenRefreshUrl(self.__nxUrl) && (typeof rawTxt !== 'string' || rawTxt.indexOf('access_token') === -1)) {
                           return buildSyntheticTokenResponse();
                         }
-                        if (typeof rawTxt === 'string' && (rawTxt.indexOf('customerIsLoggedInForFirstTime') !== -1 || rawTxt.indexOf('CustomerIsLoggedInForFirstTime') !== -1 || rawTxt.indexOf('"state":false') !== -1 || rawTxt.indexOf('"state": false') !== -1)) {
+                        if (isBffUrl(self.__nxUrl) && typeof rawTxt === 'string' && rawTxt.length > 0) {
+                          return repairBffResponseText(rawTxt);
+                        }
+                        if (typeof rawTxt === 'string' && (
+                            rawTxt.indexOf('customerIsLoggedInForFirstTime') !== -1 ||
+                            rawTxt.indexOf('CustomerIsLoggedInForFirstTime') !== -1 ||
+                            rawTxt.indexOf('"state":false') !== -1 ||
+                            rawTxt.indexOf('"state": false') !== -1 ||
+                            rawTxt.indexOf('"unauthorizedRequest":true') !== -1 ||
+                            rawTxt.indexOf('"unauthorizedRequest": true') !== -1
+                        )) {
                           return fixUserStatusesInString(rawTxt, false);
                         }
                         return rawTxt;
@@ -1201,7 +1630,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
                       configurable: true,
                       get: function() {
                         var realStatus = statusProtoDesc ? statusProtoDesc.get.call(self) : 200;
-                        if (realStatus === 401 || realStatus === 403 || (isTokenRefreshUrl(self.__nxUrl) && (realStatus >= 400 || realStatus === 0))) {
+                        if (realStatus === 401 || realStatus === 403 || (isTokenRefreshUrl(self.__nxUrl) && realStatus >= 400)) {
                           var fallbackStr = buildFallbackApiResponse(self.__nxUrl);
                           if (self.responseType === 'json') {
                             try { return JSON.parse(fallbackStr); } catch (_) { return fallbackStr; }
@@ -1227,8 +1656,20 @@ class _BrowserScreenState extends State<BrowserScreen> {
                             return synStr;
                           }
                         }
+                        if (isBffUrl(self.__nxUrl)) {
+                          if (typeof rawResp === 'string' && rawResp.length > 0) {
+                            return repairBffResponseText(rawResp);
+                          } else if (rawResp && typeof rawResp === 'object') {
+                            return repairBffObject(rawResp);
+                          }
+                        }
                         if (typeof rawResp === 'string') {
-                          if (rawResp.indexOf('customerIsLoggedInForFirstTime') !== -1 || rawResp.indexOf('CustomerIsLoggedInForFirstTime') !== -1 || rawResp.indexOf('"state":false') !== -1 || rawResp.indexOf('"state": false') !== -1) {
+                          if (rawResp.indexOf('customerIsLoggedInForFirstTime') !== -1 ||
+                              rawResp.indexOf('CustomerIsLoggedInForFirstTime') !== -1 ||
+                              rawResp.indexOf('"state":false') !== -1 ||
+                              rawResp.indexOf('"state": false') !== -1 ||
+                              rawResp.indexOf('"unauthorizedRequest":true') !== -1 ||
+                              rawResp.indexOf('"unauthorizedRequest": true') !== -1) {
                             return fixUserStatusesInString(rawResp, false);
                           }
                         } else if (rawResp && typeof rawResp === 'object') {
@@ -1244,12 +1685,13 @@ class _BrowserScreenState extends State<BrowserScreen> {
               };
 
               XMLHttpRequest.prototype.setRequestHeader = function(header, value) {
+                var st = window.__nxState || {};
                 if (String(header).toLowerCase() === 'authorization') {
                   var vStr = String(value || '');
                   if (vStr.indexOf('null') !== -1 || vStr.indexOf('undefined') !== -1 || vStr.trim() === 'Bearer') {
-                    if (tMs) {
+                    if (st.tMs) {
                       this.__nxHasAuth = true;
-                      return origSetRequestHeader.call(this, header, 'Bearer ' + tMs);
+                      return origSetRequestHeader.call(this, header, 'Bearer ' + st.tMs);
                     }
                   } else {
                     this.__nxHasAuth = true;
@@ -1260,36 +1702,37 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
               XMLHttpRequest.prototype.send = function() {
                 try {
-                  if (!this.__nxHasAuth && tMs && this.__nxUrl && this.__nxUrl.indexOf('okala.com') !== -1) {
-                    origSetRequestHeader.call(this, 'Authorization', 'Bearer ' + tMs);
+                  var st = window.__nxState || {};
+                  if (!this.__nxHasAuth && st.tMs && this.__nxUrl && shouldAttachBearerHeader(this.__nxUrl)) {
+                    origSetRequestHeader.call(this, 'Authorization', 'Bearer ' + st.tMs);
                   }
                 } catch (_) {}
                 return origSend.apply(this, arguments);
               };
             }
-
-            // و) تایمر نگهبان برای اطمینان از پاک نشدن نشست
-            if (window.__nxWatchdogTimer) {
-              clearInterval(window.__nxWatchdogTimer);
-            }
-            window.__nxWatchdogTimer = setInterval(function() {
-              try {
-                if (window.__nxProtectedKey !== targetKey) return;
-                if (tMs && !localStorage.getItem('token')) {
-                  origSetItem.call(localStorage, 'token', tMs);
-                  origSetItem.call(localStorage, 'tokenMS', tMs);
-                }
-                if (uCk && !localStorage.getItem('user')) {
-                  origSetItem.call(localStorage, 'user', fixUserStatusesInString(uCk, true));
-                }
-                var curCookies = origCookieDesc && origCookieDesc.get ? origCookieDesc.get.call(document) : document.cookie;
-                if (tMs && curCookies.indexOf('token=') === -1) {
-                  setRawCookie('tokenMS=' + tMs + '; path=/; max-age=7776000; SameSite=Lax');
-                  setRawCookie('token=' + tMs + '; path=/; max-age=7776000; SameSite=Lax');
-                }
-              } catch (_) {}
-            }, 400);
           }
+
+          // و) تایمر نگهبان برای اطمینان از پاک نشدن نشست و کوکی‌ها
+          if (window.__nxWatchdogTimer) {
+            clearInterval(window.__nxWatchdogTimer);
+          }
+          window.__nxWatchdogTimer = setInterval(function() {
+            try {
+              var st = window.__nxState;
+              if (!st || st.targetKey !== targetKey) return;
+              if (st.tMs && !localStorage.getItem('token')) {
+                origSetItem.call(localStorage, 'token', st.tMs);
+                origSetItem.call(localStorage, 'tokenMS', st.tMs);
+              }
+              if (st.uCk && !localStorage.getItem('user')) {
+                origSetItem.call(localStorage, 'user', fixUserStatusesInString(st.uCk, true));
+              }
+              var curCookies = origCookieDesc && origCookieDesc.get ? origCookieDesc.get.call(document) : document.cookie;
+              if (st.tMs && curCookies.indexOf('token=') === -1) {
+                syncCookiesNow();
+              }
+            } catch (_) {}
+          }, 400);
         } catch (e) {
           console.error('Fast Injection Error:', e);
         }
@@ -1459,27 +1902,22 @@ class _BrowserScreenState extends State<BrowserScreen> {
         }
       }
 
-      // بررسی اعتبار توکن و تلاش برای نوسازی در صورت نیاز (مطابق منطق ربات Main1.py)
+      // بررسی همیشه رفرش‌توکن با سرور اوکالا:
+      // ۱) اگر رفرش‌توکن سالم باشد، یک Access Token تازه ۱۰ ساعته می‌گیرد.
+      // ۲) اگر رفرش‌توکن منقضی باشد، rTk = null می‌شود تا کوکی منقضی به BFF اوکالا ارسال نشود و توکن اصلی نسوزد.
       if (rTk != null && rTk.isNotEmpty) {
-        final Map<String, dynamic> jwtPayload = _decodeJwtPayload(tMs);
-        final int expSec = int.tryParse(jwtPayload['exp']?.toString() ?? '0') ?? 0;
-        final int nowSec = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-        final bool hasVoyager = jwtPayload.containsKey('cerberusId') ||
-            jwtPayload.containsKey('userId');
-        if (tMs == null ||
-            tMs.isEmpty ||
-            !hasVoyager ||
-            (expSec > 0 && expSec - nowSec < 3600)) {
-          final renewed = await _tryRenewTokenIfPossible(tMs, rTk);
-          if (!mounted || currentGen != _sessionGeneration) return;
-          if (renewed['access_token'] != null &&
-              renewed['access_token']!.isNotEmpty) {
-            tMs = renewed['access_token'];
-          }
-          if (renewed['refresh_token'] != null &&
-              renewed['refresh_token']!.isNotEmpty) {
-            rTk = renewed['refresh_token'];
-          }
+        final renewed = await _tryRenewTokenIfPossible(tMs, rTk);
+        if (!mounted || currentGen != _sessionGeneration) return;
+        if (renewed['access_token'] != null &&
+            renewed['access_token']!.isNotEmpty) {
+          tMs = renewed['access_token'];
+        }
+        if (renewed['refresh_valid'] == 'true' &&
+            renewed['refresh_token'] != null &&
+            renewed['refresh_token']!.isNotEmpty) {
+          rTk = renewed['refresh_token'];
+        } else {
+          rTk = null;
         }
       }
 
@@ -1499,6 +1937,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
         if (item is! Map) continue;
         final String? name = item['name']?.toString();
         if (name == null || name.isEmpty) continue;
+        if (name == 'refresh_token' && (rTk == null || rTk.isEmpty)) continue;
         String val = item['value']?.toString() ?? '';
 
         if (name == 'user') {
@@ -1528,15 +1967,28 @@ class _BrowserScreenState extends State<BrowserScreen> {
         normalizedLocalData.add({'name': 'city_name', 'value': 'تهران'});
       }
 
-      // ۳. ثبت کوکی‌ها روی دامنه .okala.com و www.okala.com
+      // ۳. ثبت کوکی‌ها روی دامنه www.okala.com، .okala.com و apigateway.okala.com
       final WebUri storeUri = WebUri('https://$storeHost/');
+      final WebUri apiGatewayUri = WebUri('https://apigateway.okala.com/');
       final int futureExpiresMs =
           DateTime.now().add(const Duration(days: 90)).millisecondsSinceEpoch;
       final List<Future<void>> cookieFutures = [];
 
+      // فقط اگر رفرش‌توکن معتبر بود ست شود؛ در غیر این صورت ارسال کوکی منقضی باعث لاگ‌اوت در BFF می‌شود
       if (rTk != null && rTk.isNotEmpty) {
         cookieFutures.add(cookieManager.setCookie(
           url: storeUri,
+          name: 'refresh_token',
+          value: rTk,
+          domain: '.okala.com',
+          path: '/',
+          expiresDate: futureExpiresMs,
+          isHttpOnly: true,
+          isSecure: true,
+          sameSite: HTTPCookieSameSitePolicy.NONE,
+        ));
+        cookieFutures.add(cookieManager.setCookie(
+          url: apiGatewayUri,
           name: 'refresh_token',
           value: rTk,
           domain: '.okala.com',
@@ -1571,6 +2023,17 @@ class _BrowserScreenState extends State<BrowserScreen> {
             isSecure: true,
             sameSite: HTTPCookieSameSitePolicy.NONE,
           ));
+          cookieFutures.add(cookieManager.setCookie(
+            url: apiGatewayUri,
+            name: cookieName,
+            value: tMs,
+            domain: '.okala.com',
+            path: '/',
+            expiresDate: futureExpiresMs,
+            isHttpOnly: false,
+            isSecure: true,
+            sameSite: HTTPCookieSameSitePolicy.NONE,
+          ));
         }
       }
 
@@ -1587,6 +2050,17 @@ class _BrowserScreenState extends State<BrowserScreen> {
         ));
         cookieFutures.add(cookieManager.setCookie(
           url: storeUri,
+          name: 'user',
+          value: normalizedUserCookie,
+          domain: '.okala.com',
+          path: '/',
+          expiresDate: futureExpiresMs,
+          isHttpOnly: false,
+          isSecure: true,
+          sameSite: HTTPCookieSameSitePolicy.NONE,
+        ));
+        cookieFutures.add(cookieManager.setCookie(
+          url: apiGatewayUri,
           name: 'user',
           value: normalizedUserCookie,
           domain: '.okala.com',
@@ -1655,7 +2129,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
           ),
         );
         await _webViewController!.loadUrl(
-          urlRequest: URLRequest(url: WebUri('https://$storeHost/')),
+          urlRequest: URLRequest(url: WebUri('https://$storeHost/stores')),
         );
       }
     } on TimeoutException {
