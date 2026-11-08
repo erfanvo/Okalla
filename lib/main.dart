@@ -2,6 +2,8 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:http/http.dart' as http;
@@ -25,7 +27,1009 @@ const String customUserAgent =
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await NexusTokenVault.instance.init();
   runApp(const NexusLinkApp());
+}
+
+/// مدل نتیجه نوسازی توکن (نگهداری همزمان Access Token و Refresh Token چرخش‌یافته)
+class _TokenPairResult {
+  final String? accessToken;
+  final String? refreshToken;
+  final bool wasRefreshed;
+
+  const _TokenPairResult({
+    required this.accessToken,
+    required this.refreshToken,
+    this.wasRefreshed = false,
+  });
+}
+
+/// مخزن پایدار توکن‌ها روی حافظه دستگاه و رم برای جلوگیری از سوختن Refresh Token فایل‌های ZIP در مراجعات بعدی
+class NexusTokenVault {
+  NexusTokenVault._();
+  static final NexusTokenVault instance = NexusTokenVault._();
+
+  final Map<String, Map<String, String>> _vault = {};
+  bool _initialized = false;
+
+  File get _vaultFile =>
+      File('${Directory.systemTemp.path}/nexus_okala_token_vault_v3.json');
+
+  Future<void> init() async {
+    if (_initialized) return;
+    _initialized = true;
+    try {
+      final File f = _vaultFile;
+      if (await f.exists()) {
+        final String content = await f.readAsString();
+        final dynamic decoded = jsonDecode(content);
+        if (decoded is Map) {
+          decoded.forEach((k, v) {
+            if (v is Map) {
+              _vault[k.toString()] = {
+                'accessToken': v['accessToken']?.toString() ?? '',
+                'refreshToken': v['refreshToken']?.toString() ?? '',
+                'updatedAt': v['updatedAt']?.toString() ?? '',
+              };
+            }
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
+  Map<String, String>? lookup({
+    String? phone,
+    String? userId,
+    String? cerberusId,
+    String? targetUri,
+  }) {
+    final List<String> keys = [
+      if (phone != null && phone.trim().isNotEmpty) 'ph:${phone.trim()}',
+      if (userId != null && userId.trim().isNotEmpty && userId.trim() != '0')
+        'uid:${userId.trim()}',
+      if (cerberusId != null && cerberusId.trim().isNotEmpty)
+        'cid:${cerberusId.trim()}',
+      if (targetUri != null && targetUri.trim().isNotEmpty)
+        'uri:${targetUri.trim()}',
+    ];
+    for (final String k in keys) {
+      final Map<String, String>? hit = _vault[k];
+      if (hit != null &&
+          ((hit['accessToken']?.isNotEmpty ?? false) ||
+              (hit['refreshToken']?.isNotEmpty ?? false))) {
+        return hit;
+      }
+    }
+    return null;
+  }
+
+  Future<void> save({
+    String? phone,
+    String? userId,
+    String? cerberusId,
+    String? targetUri,
+    String? accessToken,
+    String? refreshToken,
+  }) async {
+    if ((accessToken == null || accessToken.isEmpty) &&
+        (refreshToken == null || refreshToken.isEmpty)) {
+      return;
+    }
+    final List<String> keys = [
+      if (phone != null && phone.trim().isNotEmpty) 'ph:${phone.trim()}',
+      if (userId != null && userId.trim().isNotEmpty && userId.trim() != '0')
+        'uid:${userId.trim()}',
+      if (cerberusId != null && cerberusId.trim().isNotEmpty)
+        'cid:${cerberusId.trim()}',
+      if (targetUri != null && targetUri.trim().isNotEmpty)
+        'uri:${targetUri.trim()}',
+    ];
+    if (keys.isEmpty) return;
+
+    final String nowIso = DateTime.now().toIso8601String();
+    for (final String k in keys) {
+      final Map<String, String> prev = _vault[k] ?? {};
+      _vault[k] = {
+        'accessToken': (accessToken != null && accessToken.isNotEmpty)
+            ? accessToken
+            : (prev['accessToken'] ?? ''),
+        'refreshToken': (refreshToken != null && refreshToken.isNotEmpty)
+            ? refreshToken
+            : (prev['refreshToken'] ?? ''),
+        'updatedAt': nowIso,
+      };
+    }
+
+    try {
+      await _vaultFile.writeAsString(jsonEncode(_vault), flush: true);
+    } catch (_) {}
+  }
+}
+
+/// رجیستری اکانت‌های استخراج‌شده از فایل‌های ZIP / JSON و عناوین نمایشی هر حساب
+class NexusAccountRegistry {
+  NexusAccountRegistry._();
+  static final NexusAccountRegistry instance = NexusAccountRegistry._();
+
+  final Map<String, Map<String, dynamic>> _accounts = {};
+  final Map<String, String> _labels = {};
+  final Map<String, String> _sourceNames = {};
+
+  bool isLocalUri(String uri) =>
+      uri.startsWith('zip://') || uri.startsWith('local://');
+
+  Map<String, dynamic>? getAccountData(String uri) {
+    final Map<String, dynamic>? d = _accounts[uri];
+    if (d == null) return null;
+    return jsonDecode(jsonEncode(d)) as Map<String, dynamic>;
+  }
+
+  void updateAccountData(String uri, Map<String, dynamic> updated) {
+    if (_accounts.containsKey(uri)) {
+      _accounts[uri] = jsonDecode(jsonEncode(updated)) as Map<String, dynamic>;
+    }
+  }
+
+  String getLabel(String uri, int index) {
+    final String? custom = _labels[uri];
+    if (custom != null && custom.isNotEmpty) {
+      return custom;
+    }
+    return 'حساب کاربری ${index + 1}';
+  }
+
+  void setLabel(String uri, String label) {
+    if (label.trim().isNotEmpty) {
+      _labels[uri] = label.trim();
+    }
+  }
+
+  String? getSourceName(String uri) => _sourceNames[uri];
+
+  String registerAccount({
+    required Map<String, dynamic> data,
+    required String phoneOrName,
+    required String sourceFileName,
+  }) {
+    final String cleanKey = phoneOrName
+        .replaceAll(RegExp(r'[^0-9a-zA-Z_-]'), '')
+        .trim();
+    final String idPart = cleanKey.isNotEmpty
+        ? cleanKey
+        : DateTime.now().microsecondsSinceEpoch.toString();
+    String uri = 'zip://$idPart';
+    int suffix = 1;
+    while (_accounts.containsKey(uri) &&
+        jsonEncode(_accounts[uri]) != jsonEncode(data)) {
+      suffix++;
+      uri = 'zip://${idPart}_$suffix';
+    }
+    _accounts[uri] = jsonDecode(jsonEncode(data)) as Map<String, dynamic>;
+    _labels[uri] = cleanKey.isNotEmpty ? cleanKey : phoneOrName;
+    _sourceNames[uri] = sourceFileName;
+    return uri;
+  }
+
+  void removeUri(String uri) {
+    _accounts.remove(uri);
+    _labels.remove(uri);
+    _sourceNames.remove(uri);
+  }
+}
+
+/// نتیجه استخراج یک فایل ورودی (ZIP / JSON / TXT)
+class ZipExtractionSummary {
+  final List<String> accountUris;
+  final List<String> extractedLinks;
+  final String fileName;
+
+  const ZipExtractionSummary({
+    required this.accountUris,
+    required this.extractedLinks,
+    required this.fileName,
+  });
+
+  int get totalCount => accountUris.length + extractedLinks.length;
+}
+
+/// استخراج‌کننده فوق‌سریع و بدون نیاز به پکیج خارجی برای فایل‌های ZIP، JSON و TXT
+/// با استفاده از ZLibCodec(raw: true) داخلی دارت (سازگار با ساختار ربات Main1.py)
+class NexusZipExtractor {
+  static String _toEnDigits(String input) {
+    const Map<String, String> map = {
+      '۰': '0', '۱': '1', '۲': '2', '۳': '3', '۴': '4',
+      '۵': '5', '۶': '6', '۷': '7', '۸': '8', '۹': '9',
+      '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4',
+      '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9',
+    };
+    String out = input;
+    map.forEach((k, v) => out = out.replaceAll(k, v));
+    return out;
+  }
+
+  static bool isZipBytes(Uint8List bytes) {
+    return bytes.length >= 4 &&
+        bytes[0] == 0x50 &&
+        bytes[1] == 0x4B &&
+        (bytes[2] == 0x03 || bytes[2] == 0x05 || bytes[2] == 0x07);
+  }
+
+  static Map<String, dynamic> _decodeJwt(String? token) {
+    if (token == null || !token.contains('.')) return {};
+    try {
+      final List<String> parts = token.split('.');
+      if (parts.length < 2) return {};
+      String normalized =
+          parts[1].replaceAll('-', '+').replaceAll('_', '/').trim();
+      while (normalized.length % 4 != 0) {
+        normalized += '=';
+      }
+      final String jsonStr = utf8.decode(base64Decode(normalized));
+      final dynamic decoded = jsonDecode(jsonStr);
+      if (decoded is Map<String, dynamic>) return decoded;
+    } catch (_) {}
+    return {};
+  }
+
+  static String? extractPhoneFromAccountData(
+      Map<String, dynamic> data, String fallbackFileName) {
+    try {
+      if (data['origins'] is List) {
+        for (final dynamic o in data['origins'] as List) {
+          if (o is Map && o['localStorage'] is List) {
+            for (final dynamic item in o['localStorage'] as List) {
+              if (item is Map) {
+                final String name = item['name']?.toString() ?? '';
+                final String val = item['value']?.toString() ?? '';
+                if (name == 'user' && val.isNotEmpty) {
+                  final String dec =
+                      (val.contains('%7B') || val.contains('%22'))
+                          ? Uri.decodeComponent(val)
+                          : val;
+                  final dynamic u = jsonDecode(dec);
+                  if (u is Map) {
+                    final String? ph = (u['mobilePhone'] ??
+                            u['userName'] ??
+                            u['username'])
+                        ?.toString();
+                    if (ph != null && ph.trim().isNotEmpty) {
+                      return _toEnDigits(ph.trim());
+                    }
+                  }
+                } else if (name == 'persist:root' && val.isNotEmpty) {
+                  final dynamic pr = jsonDecode(val);
+                  if (pr is Map && pr['user'] is String) {
+                    final dynamic uOuter = jsonDecode(pr['user'] as String);
+                    if (uOuter is Map && uOuter['user'] is Map) {
+                      final Map uInner = uOuter['user'] as Map;
+                      final String? ph = (uInner['mobilePhone'] ??
+                              uInner['userName'] ??
+                              uInner['username'])
+                          ?.toString();
+                      if (ph != null && ph.trim().isNotEmpty) {
+                        return _toEnDigits(ph.trim());
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      if (data['cookies'] is List) {
+        for (final dynamic c in data['cookies'] as List) {
+          if (c is Map) {
+            final String name = c['name']?.toString() ?? '';
+            final String val = c['value']?.toString() ?? '';
+            if (name == 'user' && val.isNotEmpty) {
+              final String dec = (val.contains('%7B') || val.contains('%22'))
+                  ? Uri.decodeComponent(val)
+                  : val;
+              final dynamic u = jsonDecode(dec);
+              if (u is Map) {
+                final String? ph =
+                    (u['mobilePhone'] ?? u['userName'] ?? u['username'])
+                        ?.toString();
+                if (ph != null && ph.trim().isNotEmpty) {
+                  return _toEnDigits(ph.trim());
+                }
+              }
+            } else if ((name == 'tokenMS' || name == 'token') &&
+                val.isNotEmpty) {
+              final Map<String, dynamic> jwt = _decodeJwt(val);
+              final String? ph =
+                  (jwt['mobilePhone'] ?? jwt['username'] ?? jwt['userName'])
+                      ?.toString();
+              if (ph != null && ph.trim().isNotEmpty) {
+                return _toEnDigits(ph.trim());
+              }
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
+    final String base = fallbackFileName
+        .split('/')
+        .last
+        .split(r'\')
+        .last
+        .replaceAll(RegExp(r'\.json$', caseSensitive: false), '')
+        .trim();
+    final String digits =
+        _toEnDigits(base).replaceAll(RegExp(r'[^0-9]'), '');
+    if (digits.length >= 10) return digits;
+    return base.isNotEmpty ? base : null;
+  }
+
+  static bool isAccountStorageStateJson(Map<String, dynamic> map) {
+    if (map['cookies'] is List || map['origins'] is List) return true;
+    if (map['access_token'] is String &&
+        (map['access_token'] as String).isNotEmpty) {
+      return true;
+    }
+    if (map['refresh_token'] is String &&
+        (map['refresh_token'] as String).isNotEmpty) {
+      return true;
+    }
+    return false;
+  }
+
+  /// غنی‌سازی دیتای اکانت با اطلاعات فایل data/accounts.json در صورت وجود
+  static void _enrichWithAccountsMeta(
+      Map<String, dynamic> accData, Map<String, dynamic>? metaEntry) {
+    if (metaEntry == null) return;
+    final dynamic uid = metaEntry['user_id'];
+    final String? cid = metaEntry['customer_id']?.toString();
+    final String? phone = metaEntry['phone']?.toString();
+
+    if (accData['cookies'] is List) {
+      for (final dynamic c in accData['cookies'] as List) {
+        if (c is Map && c['name'] == 'user' && c['value'] is String) {
+          try {
+            final String raw = c['value'] as String;
+            final bool enc = raw.contains('%7B') || raw.contains('%22');
+            final dynamic u =
+                jsonDecode(enc ? Uri.decodeComponent(raw) : raw);
+            if (u is Map<String, dynamic>) {
+              if ((u['id'] == null || u['id'] == 0) && uid != null) {
+                u['id'] = uid;
+                u['alternativeCustomerId'] = uid;
+              }
+              if ((u['alternativeId'] == null ||
+                      u['alternativeId'].toString().isEmpty) &&
+                  cid != null &&
+                  cid.isNotEmpty) {
+                u['alternativeId'] = cid;
+              }
+              if ((u['mobilePhone'] == null ||
+                      u['mobilePhone'].toString().isEmpty) &&
+                  phone != null &&
+                  phone.isNotEmpty) {
+                u['mobilePhone'] = phone;
+                u['userName'] = phone;
+              }
+              final String updatedJson = jsonEncode(u);
+              c['value'] =
+                  enc ? Uri.encodeComponent(updatedJson) : updatedJson;
+            }
+          } catch (_) {}
+        }
+      }
+    }
+  }
+
+  /// بازگشایی کامل فایل ZIP در دارت بدون وابستگی خارجی
+  static Map<String, Uint8List> _unzipBytes(Uint8List bytes) {
+    final Map<String, Uint8List> files = {};
+    final ByteData view =
+        ByteData.sublistView(bytes, 0, bytes.length);
+
+    // ۱. تلاش از طریق Central Directory (پشتیبانی کامل از تمام فلگ‌های استاندارد و استریم)
+    int eocdOffset = -1;
+    final int minEocdPos =
+        bytes.length - 65557 > 0 ? bytes.length - 65557 : 0;
+    for (int i = bytes.length - 22; i >= minEocdPos; i--) {
+      if (bytes[i] == 0x50 &&
+          bytes[i + 1] == 0x4B &&
+          bytes[i + 2] == 0x05 &&
+          bytes[i + 3] == 0x06) {
+        eocdOffset = i;
+        break;
+      }
+    }
+
+    if (eocdOffset != -1 && eocdOffset + 22 <= bytes.length) {
+      try {
+        final int totalEntries =
+            view.getUint16(eocdOffset + 10, Endian.little);
+        final int cdOffset =
+            view.getUint32(eocdOffset + 16, Endian.little);
+
+        int pos = cdOffset;
+        for (int idx = 0;
+            idx < totalEntries && pos + 46 <= bytes.length;
+            idx++) {
+          if (bytes[pos] != 0x50 ||
+              bytes[pos + 1] != 0x4B ||
+              bytes[pos + 2] != 0x01 ||
+              bytes[pos + 3] != 0x02) {
+            break;
+          }
+
+          final int compMethod = view.getUint16(pos + 10, Endian.little);
+          final int compSize = view.getUint32(pos + 20, Endian.little);
+          final int uncompSize = view.getUint32(pos + 24, Endian.little);
+          final int fileNameLen = view.getUint16(pos + 28, Endian.little);
+          final int extraLen = view.getUint16(pos + 30, Endian.little);
+          final int commentLen = view.getUint16(pos + 32, Endian.little);
+          final int localHeaderOffset =
+              view.getUint32(pos + 42, Endian.little);
+
+          if (pos + 46 + fileNameLen > bytes.length) break;
+          final String fileName = utf8.decode(
+            Uint8List.sublistView(bytes, pos + 46, pos + 46 + fileNameLen),
+            allowMalformed: true,
+          );
+          pos += 46 + fileNameLen + extraLen + commentLen;
+
+          if (fileName.endsWith('/') ||
+              fileName.endsWith(r'\') ||
+              uncompSize == 0 ||
+              compSize == 0) {
+            continue;
+          }
+
+          if (localHeaderOffset + 30 <= bytes.length &&
+              bytes[localHeaderOffset] == 0x50 &&
+              bytes[localHeaderOffset + 1] == 0x4B &&
+              bytes[localHeaderOffset + 2] == 0x03 &&
+              bytes[localHeaderOffset + 3] == 0x04) {
+            final int lhNameLen =
+                view.getUint16(localHeaderOffset + 26, Endian.little);
+            final int lhExtraLen =
+                view.getUint16(localHeaderOffset + 28, Endian.little);
+            final int dataStart =
+                localHeaderOffset + 30 + lhNameLen + lhExtraLen;
+            if (dataStart + compSize <= bytes.length) {
+              final Uint8List compSlice = Uint8List.sublistView(
+                  bytes, dataStart, dataStart + compSize);
+              if (compMethod == 0) {
+                files[fileName] = compSlice;
+              } else if (compMethod == 8) {
+                final List<int> decompressed =
+                    ZLibCodec(raw: true).decoder.convert(compSlice);
+                files[fileName] = Uint8List.fromList(decompressed);
+              }
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (files.isNotEmpty) return files;
+
+    // ۲. فال‌بک: پیمایش مستقیم Local File Headers در صورت ناقص بودن انتهای فایل ZIP
+    int offset = 0;
+    while (offset + 30 <= bytes.length) {
+      if (bytes[offset] != 0x50 ||
+          bytes[offset + 1] != 0x4B ||
+          bytes[offset + 2] != 0x03 ||
+          bytes[offset + 3] != 0x04) {
+        break;
+      }
+      final int compMethod = view.getUint16(offset + 8, Endian.little);
+      final int compSize = view.getUint32(offset + 18, Endian.little);
+      final int fileNameLen = view.getUint16(offset + 26, Endian.little);
+      final int extraLen = view.getUint16(offset + 28, Endian.little);
+      final int dataStart = offset + 30 + fileNameLen + extraLen;
+      if (offset + 30 + fileNameLen > bytes.length ||
+          dataStart + compSize > bytes.length) {
+        break;
+      }
+      final String fileName = utf8.decode(
+        Uint8List.sublistView(
+            bytes, offset + 30, offset + 30 + fileNameLen),
+        allowMalformed: true,
+      );
+      if (!fileName.endsWith('/') && compSize > 0) {
+        try {
+          final Uint8List compSlice = Uint8List.sublistView(
+              bytes, dataStart, dataStart + compSize);
+          if (compMethod == 0) {
+            files[fileName] = compSlice;
+          } else if (compMethod == 8) {
+            final List<int> decompressed =
+                ZLibCodec(raw: true).decoder.convert(compSlice);
+            files[fileName] = Uint8List.fromList(decompressed);
+          }
+        } catch (_) {}
+      }
+      offset = dataStart + compSize;
+    }
+
+    return files;
+  }
+
+  static Map<String, dynamic> _buildAccountJsonFromSimpleTokens(
+      String phone, String accessToken, String refreshToken) {
+    final String cleanPh = _toEnDigits(phone).replaceAll(RegExp(r'[^0-9]'), '');
+    final Map<String, dynamic> jwt = _decodeJwt(accessToken);
+    final int uid =
+        int.tryParse((jwt['userId'] ?? jwt['sub'] ?? '0').toString()) ?? 0;
+    final String cerbId = (jwt['cerberusId'] ?? '').toString();
+    final Map<String, dynamic> userObj = {
+      'id': uid,
+      'alternativeId': cerbId,
+      'alternativeCustomerId': uid,
+      'firstName': 'علی',
+      'lastName': 'محمدی',
+      'birthDate': '',
+      'genderCode': 1,
+      'userName': cleanPh,
+      'mobilePhone': cleanPh,
+      'customerIsLoggedInForFirstTime': false,
+      'state': true,
+      'hasAddress': false,
+      'birthDateEpoch': 1005683400,
+    };
+    final String encUser = Uri.encodeComponent(jsonEncode(userObj));
+    return {
+      'access_token': accessToken,
+      'refresh_token': refreshToken,
+      'cookies': [
+        if (refreshToken.isNotEmpty)
+          {
+            'name': 'refresh_token',
+            'value': refreshToken,
+            'domain': '.okala.com',
+            'path': '/',
+            'httpOnly': true,
+            'secure': true,
+            'sameSite': 'None',
+          },
+        if (accessToken.isNotEmpty) ...[
+          {
+            'name': 'tokenMS',
+            'value': accessToken,
+            'domain': 'www.okala.com',
+            'path': '/',
+            'httpOnly': false,
+            'secure': false,
+            'sameSite': 'Lax',
+          },
+          {
+            'name': 'token',
+            'value': accessToken,
+            'domain': 'www.okala.com',
+            'path': '/',
+            'httpOnly': false,
+            'secure': false,
+            'sameSite': 'Lax',
+          },
+        ],
+        {
+          'name': 'user',
+          'value': encUser,
+          'domain': 'www.okala.com',
+          'path': '/',
+          'httpOnly': false,
+          'secure': false,
+          'sameSite': 'Lax',
+        },
+      ],
+      'origins': [
+        {
+          'origin': 'https://www.okala.com',
+          'localStorage': [
+            if (accessToken.isNotEmpty) ...[
+              {'name': 'tokenMS', 'value': accessToken},
+              {'name': 'token', 'value': accessToken},
+            ],
+            {'name': 'user', 'value': encUser},
+            {'name': 'city_name', 'value': 'تهران'},
+            {'name': 'city_id', 'value': '129'},
+          ],
+        },
+      ],
+    };
+  }
+
+  /// استخراج اکانت‌ها و لینک‌ها از هر نوع فایل ورودی (ZIP، JSON یا TXT)
+  static ZipExtractionSummary extractFromFileBytes({
+    required String fileName,
+    required Uint8List bytes,
+  }) {
+    final List<String> accountUris = [];
+    final List<String> extractedLinks = [];
+
+    if (isZipBytes(bytes)) {
+      final Map<String, Uint8List> archiveFiles = _unzipBytes(bytes);
+      final Map<String, Map<String, dynamic>> accountsMetaByPhone = {};
+
+      // گام اول: بررسی فایل متادیتا data/accounts.json در صورت وجود در زیپ
+      for (final MapEntry<String, Uint8List> entry in archiveFiles.entries) {
+        final String lowerPath = entry.key.toLowerCase().replaceAll(r'\', '/');
+        if (lowerPath.endsWith('data/accounts.json') ||
+            lowerPath == 'accounts.json') {
+          try {
+            final String raw =
+                utf8.decode(entry.value, allowMalformed: true);
+            final dynamic parsed = jsonDecode(raw);
+            if (parsed is Map && !isAccountStorageStateJson(parsed.cast<String, dynamic>())) {
+              parsed.forEach((k, v) {
+                if (v is Map) {
+                  final String cleanPh = _toEnDigits(k.toString())
+                      .replaceAll(RegExp(r'[^0-9]'), '');
+                  if (cleanPh.isNotEmpty) {
+                    accountsMetaByPhone[cleanPh] =
+                        Map<String, dynamic>.from(v);
+                  }
+                }
+              });
+            }
+          } catch (_) {}
+        }
+      }
+
+      // مرتب‌سازی نام فایل‌ها برای حفظ ترتیب شماره‌ها
+      final List<String> sortedKeys = archiveFiles.keys.toList()..sort();
+
+      for (final String entryPath in sortedKeys) {
+        if (entryPath.contains('__MACOSX')) continue;
+        final String baseName =
+            entryPath.split('/').last.split(r'\').last.trim();
+        if (baseName.isEmpty || baseName.startsWith('.')) continue;
+
+        final String lowerBase = baseName.toLowerCase();
+        final Uint8List contentBytes = archiveFiles[entryPath]!;
+        final String rawText =
+            utf8.decode(contentBytes, allowMalformed: true);
+
+        if (lowerBase.endsWith('.json')) {
+          try {
+            final dynamic parsed = jsonDecode(rawText);
+            if (parsed is Map<String, dynamic>) {
+              if (isAccountStorageStateJson(parsed)) {
+                final String? phone =
+                    extractPhoneFromAccountData(parsed, baseName);
+                if (phone != null && accountsMetaByPhone.containsKey(phone)) {
+                  _enrichWithAccountsMeta(
+                      parsed, accountsMetaByPhone[phone]);
+                }
+                final String uri =
+                    NexusAccountRegistry.instance.registerAccount(
+                  data: parsed,
+                  phoneOrName: phone ?? baseName,
+                  sourceFileName: fileName,
+                );
+                if (!accountUris.contains(uri)) {
+                  accountUris.add(uri);
+                }
+              } else {
+                // بررسی دیکشنری شماره -> توکن (در صورتی که فایل JSON شامل access_token/refresh_token باشد)
+                parsed.forEach((k, v) {
+                  if (v is Map &&
+                      (v['access_token'] != null ||
+                          v['refresh_token'] != null)) {
+                    final Map<String, dynamic> built =
+                        _buildAccountJsonFromSimpleTokens(
+                      k.toString(),
+                      v['access_token']?.toString() ?? '',
+                      v['refresh_token']?.toString() ?? '',
+                    );
+                    final String uri =
+                        NexusAccountRegistry.instance.registerAccount(
+                      data: built,
+                      phoneOrName: k.toString(),
+                      sourceFileName: fileName,
+                    );
+                    if (!accountUris.contains(uri)) {
+                      accountUris.add(uri);
+                    }
+                  }
+                });
+              }
+            }
+          } catch (_) {}
+        } else if (lowerBase.endsWith('.txt') ||
+            lowerBase.endsWith('.csv') ||
+            lowerBase.endsWith('.log')) {
+          final Iterable<RegExpMatch> matches =
+              RegExp(r"""https?://[^\s"'<>]+""").allMatches(rawText);
+          for (final RegExpMatch m in matches) {
+            final String u = m.group(0)!.trim();
+            if (u.isNotEmpty && !extractedLinks.contains(u)) {
+              extractedLinks.add(u);
+            }
+          }
+        }
+      }
+      return ZipExtractionSummary(
+        accountUris: accountUris,
+        extractedLinks: extractedLinks,
+        fileName: fileName,
+      );
+    }
+
+    // اگر فایل غیر ZIP (مانند .json یا .txt) انتخاب شده باشد
+    final String rawText = utf8.decode(bytes, allowMalformed: true).trim();
+    if (rawText.startsWith('{')) {
+      try {
+        final dynamic parsed = jsonDecode(rawText);
+        if (parsed is Map<String, dynamic>) {
+          if (isAccountStorageStateJson(parsed)) {
+            final String? phone =
+                extractPhoneFromAccountData(parsed, fileName);
+            final String uri =
+                NexusAccountRegistry.instance.registerAccount(
+              data: parsed,
+              phoneOrName: phone ?? fileName,
+              sourceFileName: fileName,
+            );
+            accountUris.add(uri);
+          } else {
+            parsed.forEach((k, v) {
+              if (v is Map &&
+                  (v['access_token'] != null ||
+                      v['refresh_token'] != null)) {
+                final Map<String, dynamic> built =
+                    _buildAccountJsonFromSimpleTokens(
+                  k.toString(),
+                  v['access_token']?.toString() ?? '',
+                  v['refresh_token']?.toString() ?? '',
+                );
+                final String uri =
+                    NexusAccountRegistry.instance.registerAccount(
+                  data: built,
+                  phoneOrName: k.toString(),
+                  sourceFileName: fileName,
+                );
+                if (!accountUris.contains(uri)) {
+                  accountUris.add(uri);
+                }
+              }
+            });
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (accountUris.isEmpty) {
+      final Iterable<RegExpMatch> matches =
+          RegExp(r"""https?://[^\s"'<>]+""").allMatches(rawText);
+      for (final RegExpMatch m in matches) {
+        final String u = m.group(0)!.trim();
+        if (u.isNotEmpty && !extractedLinks.contains(u)) {
+          extractedLinks.add(u);
+        }
+      }
+    }
+
+    return ZipExtractionSummary(
+      accountUris: accountUris,
+      extractedLinks: extractedLinks,
+      fileName: fileName,
+    );
+  }
+}
+
+/// ویجت دکمه انتخاب فایل بومی اندروید (پشتیبانی از انتخاب همزمان چند فایل ZIP / JSON / TXT بدون نیاز به مجوز حافظه یا پکیج اضافی)
+class NexusFilePickerButton extends StatefulWidget {
+  final String title;
+  final String subtitle;
+  final void Function(List<ZipExtractionSummary> summaries) onFilesExtracted;
+  final VoidCallback? onPickStarted;
+
+  const NexusFilePickerButton({
+    super.key,
+    this.title = 'انتخاب فایل اکانت (ZIP / JSON / TXT)',
+    this.subtitle = 'پشتیبانی از بارگذاری یک یا چند فایل زیپ همزمان',
+    required this.onFilesExtracted,
+    this.onPickStarted,
+  });
+
+  @override
+  State<NexusFilePickerButton> createState() => _NexusFilePickerButtonState();
+}
+
+class _NexusFilePickerButtonState extends State<NexusFilePickerButton> {
+  bool _isReading = false;
+
+  String _buildPickerHtml() {
+    final String safeTitle = const HtmlEscape().convert(widget.title);
+    final String safeSub = const HtmlEscape().convert(widget.subtitle);
+    return '''<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<style>
+  * { box-sizing: border-box; user-select: none; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: #12141D; overflow: hidden;
+    font-family: system-ui, -apple-system, sans-serif;
+  }
+  label {
+    display: flex; align-items: center; justify-content: space-between;
+    width: 100%; height: 100%; padding: 0 16px;
+    background: #12141D;
+    border: 1.5px dashed rgba(0, 208, 158, 0.55);
+    border-radius: 16px; cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  label:active {
+    background: rgba(0, 208, 158, 0.12);
+    border-color: #00D09E;
+  }
+  .info { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+  .title { color: #F3F4F6; font-size: 13.5px; font-weight: 700; }
+  .sub { color: #9CA3AF; font-size: 11px; }
+  .badge {
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0, 208, 158, 0.14); color: #00D09E;
+    padding: 8px 12px; border-radius: 11px;
+    font-size: 12px; font-weight: 800; letter-spacing: 0.4px;
+  }
+  input[type="file"] { display: none; }
+</style>
+</head>
+<body>
+  <label for="nxZipInput">
+    <div class="info">
+      <span class="title">📂 $safeTitle</span>
+      <span class="sub">$safeSub</span>
+    </div>
+    <div class="badge">ZIP / JSON</div>
+  </label>
+  <input id="nxZipInput" type="file" multiple />
+  <script>
+    (function() {
+      var inp = document.getElementById('nxZipInput');
+      inp.addEventListener('change', function(ev) {
+        var files = ev.target.files;
+        if (!files || files.length === 0) return;
+        if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
+          window.flutter_inappwebview.callHandler('onPickStarted');
+        }
+        var results = [];
+        var idx = 0;
+        function readNext() {
+          if (idx >= files.length) {
+            if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
+              window.flutter_inappwebview.callHandler('onFilesPicked', results);
+            }
+            inp.value = '';
+            return;
+          }
+          var f = files[idx++];
+          var reader = new FileReader();
+          reader.onload = function(e) {
+            var dataUrl = String(e.target.result || '');
+            var comma = dataUrl.indexOf(',');
+            var b64 = comma !== -1 ? dataUrl.substring(comma + 1) : dataUrl;
+            results.push({ name: f.name || 'archive.zip', base64: b64 });
+            readNext();
+          };
+          reader.onerror = function() {
+            readNext();
+          };
+          reader.readAsDataURL(f);
+        }
+        readNext();
+      });
+    })();
+  </script>
+</body>
+</html>''';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 64,
+      child: Stack(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(16),
+            child: InAppWebView(
+              initialData: InAppWebViewInitialData(
+                data: _buildPickerHtml(),
+                mimeType: 'text/html',
+                encoding: 'utf-8',
+              ),
+              initialSettings: InAppWebViewSettings(
+                javaScriptEnabled: true,
+                transparentBackground: true,
+                supportZoom: false,
+                disableVerticalScroll: true,
+                disableHorizontalScroll: true,
+                useHybridComposition: true,
+                allowFileAccessFromFileURLs: true,
+                allowUniversalAccessFromFileURLs: true,
+              ),
+              onWebViewCreated: (controller) {
+                controller.addJavaScriptHandler(
+                  handlerName: 'onPickStarted',
+                  callback: (_) {
+                    if (mounted) {
+                      setState(() => _isReading = true);
+                    }
+                    widget.onPickStarted?.call();
+                  },
+                );
+                controller.addJavaScriptHandler(
+                  handlerName: 'onFilesPicked',
+                  callback: (args) {
+                    if (mounted) {
+                      setState(() => _isReading = false);
+                    }
+                    if (args.isEmpty || args.first is! List) return;
+                    final List<dynamic> rawList = args.first as List<dynamic>;
+                    final List<ZipExtractionSummary> summaries = [];
+                    for (final dynamic item in rawList) {
+                      if (item is Map) {
+                        final String fname =
+                            item['name']?.toString() ?? 'archive.zip';
+                        final String b64 =
+                            item['base64']?.toString() ?? '';
+                        if (b64.isEmpty) continue;
+                        try {
+                          final Uint8List bytes = base64Decode(b64);
+                          final ZipExtractionSummary summary =
+                              NexusZipExtractor.extractFromFileBytes(
+                            fileName: fname,
+                            bytes: bytes,
+                          );
+                          summaries.add(summary);
+                        } catch (_) {}
+                      }
+                    }
+                    widget.onFilesExtracted(summaries);
+                  },
+                );
+              },
+            ),
+          ),
+          if (_isReading)
+            Container(
+              decoration: BoxDecoration(
+                color: bgDark.withOpacity(0.88),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: primaryAccent, width: 1.2),
+              ),
+              child: const Center(
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        color: primaryAccent,
+                        strokeWidth: 2.2,
+                      ),
+                    ),
+                    SizedBox(width: 10),
+                    Text(
+                      'در حال استخراج اکانت‌ها از فایل ZIP...',
+                      style: TextStyle(
+                        color: primaryAccent,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 }
 
 class NexusLinkApp extends StatelessWidget {
@@ -58,6 +1062,8 @@ class WorkspaceScreen extends StatefulWidget {
 
 class _WorkspaceScreenState extends State<WorkspaceScreen> {
   final TextEditingController _linksController = TextEditingController();
+  final List<String> _importedZipAccountUris = [];
+  final List<String> _importedZipFileNames = [];
   String _statusMessage = '';
   bool _isWarning = false;
 
@@ -88,38 +1094,103 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return uri.scheme.toLowerCase() == 'https' && uri.userInfo.isEmpty;
   }
 
-  void _processLinks() {
-    final text = _linksController.text;
-    if (text.trim().isEmpty) {
-      setState(() {
-        _isWarning = true;
-        _statusMessage = 'لطفاً پیوندها را وارد کنید.';
-      });
-      return;
-    }
+  void _handleExtractedFiles(List<ZipExtractionSummary> summaries) {
+    int newAccCount = 0;
+    int newLinkCount = 0;
+    final List<String> currentLinksText = [];
 
-    final tokens = text.split(RegExp(r'\s+'));
-    final List<String> extractedUrls = [];
-    int invalidCount = 0;
-
-    for (var token in tokens) {
-      token = token.trim();
-      if (token.isEmpty) continue;
-
-      if (_isAllowedLink(token)) {
-        final normalized = _normaliseLink(token);
-        if (!extractedUrls.contains(normalized)) {
-          extractedUrls.add(normalized);
+    for (final ZipExtractionSummary s in summaries) {
+      if (s.totalCount > 0 && !_importedZipFileNames.contains(s.fileName)) {
+        _importedZipFileNames.add(s.fileName);
+      }
+      for (final String uri in s.accountUris) {
+        if (!_importedZipAccountUris.contains(uri)) {
+          _importedZipAccountUris.add(uri);
+          newAccCount++;
         }
-      } else {
-        invalidCount++;
+      }
+      for (final String link in s.extractedLinks) {
+        currentLinksText.add(link);
+        newLinkCount++;
       }
     }
 
-    if (extractedUrls.isEmpty) {
+    if (currentLinksText.isNotEmpty) {
+      final String existing = _linksController.text.trim();
+      _linksController.text = existing.isEmpty
+          ? currentLinksText.join('\n')
+          : '$existing\n${currentLinksText.join('\n')}';
+    }
+
+    setState(() {
+      if (newAccCount == 0 && newLinkCount == 0) {
+        _isWarning = true;
+        _statusMessage =
+            'هیچ اکانت یا پیوند معتبری در فایل انتخابی یافت نشد (یا قبلاً اضافه شده است).';
+      } else {
+        _isWarning = false;
+        final List<String> parts = [];
+        if (newAccCount > 0) parts.add('$newAccCount اکانت از فایل ZIP');
+        if (newLinkCount > 0) parts.add('$newLinkCount پیوند');
+        _statusMessage =
+            '${parts.join(' و ')} با موفقیت بارگذاری شد. مجموع اکانت‌های ZIP آماده: ${_importedZipAccountUris.length}';
+      }
+    });
+  }
+
+  void _processLinks() {
+    final String text = _linksController.text.trim();
+    final List<String> finalTargets = [];
+    int invalidCount = 0;
+
+    // ۱. اگر کاربر مستقیماً متن JSON یک اکانت را در کادر پیست کرده باشد
+    if (text.startsWith('{') && text.endsWith('}')) {
+      try {
+        final dynamic parsed = jsonDecode(text);
+        if (parsed is Map<String, dynamic> &&
+            NexusZipExtractor.isAccountStorageStateJson(parsed)) {
+          final String? phone =
+              NexusZipExtractor.extractPhoneFromAccountData(parsed, 'JSON');
+          final String uri = NexusAccountRegistry.instance.registerAccount(
+            data: parsed,
+            phoneOrName: phone ?? 'اکانت JSON',
+            sourceFileName: 'ورودی مستقیم',
+          );
+          finalTargets.add(uri);
+        }
+      } catch (_) {}
+    }
+
+    // ۲. استخراج پیوندها از کادر متنی
+    if (finalTargets.isEmpty && text.isNotEmpty) {
+      final List<String> tokens = text.split(RegExp(r'\s+'));
+      for (String token in tokens) {
+        token = token.trim();
+        if (token.isEmpty) continue;
+
+        if (_isAllowedLink(token)) {
+          final String normalized = _normaliseLink(token);
+          if (!finalTargets.contains(normalized)) {
+            finalTargets.add(normalized);
+          }
+        } else {
+          invalidCount++;
+        }
+      }
+    }
+
+    // ۳. افزودن تمامی اکانت‌های استخراج‌شده از فایل‌های ZIP
+    for (final String zipUri in _importedZipAccountUris) {
+      if (!finalTargets.contains(zipUri)) {
+        finalTargets.add(zipUri);
+      }
+    }
+
+    if (finalTargets.isEmpty) {
       setState(() {
         _isWarning = true;
-        _statusMessage = 'هیچ پیوند معتبری یافت نشد.';
+        _statusMessage =
+            'لطفاً پیوندها را وارد کنید یا یک فایل ZIP انتخاب نمایید.';
       });
       return;
     }
@@ -127,14 +1198,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     setState(() {
       _isWarning = false;
       _statusMessage = invalidCount > 0
-          ? '$invalidCount مورد غیرمعتبر نادیده گرفته شد. ${extractedUrls.length} پیوند معتبر آماده پردازش است.'
+          ? '$invalidCount مورد غیرمعتبر نادیده گرفته شد. ${finalTargets.length} حساب آماده ورود است.'
           : '';
     });
 
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => BrowserScreen(urls: extractedUrls),
+        builder: (context) => BrowserScreen(urls: finalTargets),
       ),
     );
   }
@@ -208,17 +1279,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     ),
                     const SizedBox(height: 8),
                     const Text(
-                      'سیستم مدیریت سریع و کم‌حجم پیوندها',
+                      'سیستم مدیریت سریع پیوندها و فایل‌های ZIP اکانت',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         color: textSecondary,
-                        fontSize: 14,
+                        fontSize: 13.5,
                       ),
                     ),
-                    const SizedBox(height: 36),
+                    const SizedBox(height: 28),
                     TextField(
                       controller: _linksController,
-                      maxLines: 7,
+                      maxLines: 5,
                       textDirection: TextDirection.ltr,
                       textAlign: TextAlign.left,
                       style: const TextStyle(
@@ -227,7 +1298,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                         height: 1.6,
                       ),
                       decoration: InputDecoration(
-                        labelText: 'لیست پیوندها',
+                        labelText: 'لیست پیوندها (یا لینک فایل ZIP)',
                         labelStyle: const TextStyle(color: textSecondary),
                         hintText: 'https://${allowedLinkHosts.first}/acc/...',
                         hintStyle: TextStyle(
@@ -237,7 +1308,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                         filled: true,
                         fillColor: bgDark,
                         alignLabelWithHint: true,
-                        contentPadding: const EdgeInsets.all(20),
+                        contentPadding: const EdgeInsets.all(18),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(16),
                           borderSide: BorderSide.none,
@@ -251,36 +1322,133 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                         ),
                       ),
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 10),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         TextButton.icon(
                           onPressed: () {
                             _linksController.clear();
-                            setState(() => _statusMessage = '');
+                            setState(() {
+                              _importedZipAccountUris.clear();
+                              _importedZipFileNames.clear();
+                              _statusMessage = '';
+                            });
                           },
                           icon: const Icon(Icons.clear_all,
                               size: 16, color: textSecondary),
                           label: const Text(
-                            'پاک کردن متن',
+                            'پاک کردن همه',
                             style:
                                 TextStyle(color: textSecondary, fontSize: 12),
                           ),
                         ),
                         const Flexible(
                           child: Text(
-                            'پیوندها را با فاصله یا خط جدید وارد کنید.',
+                            'پیوندها را وارد کنید یا فایل ZIP انتخاب نمایید.',
                             textAlign: TextAlign.right,
                             style: TextStyle(
                               color: textSecondary,
-                              fontSize: 12,
+                              fontSize: 11.5,
                             ),
                           ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 12),
+                    NexusFilePickerButton(
+                      onFilesExtracted: _handleExtractedFiles,
+                    ),
+                    if (_importedZipAccountUris.isNotEmpty) ...[
+                      const SizedBox(height: 14),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: bgDark,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: primaryAccent.withOpacity(0.35),
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                IconButton(
+                                  visualDensity: VisualDensity.compact,
+                                  tooltip: 'حذف فایل‌های زیپ',
+                                  onPressed: () {
+                                    setState(() {
+                                      _importedZipAccountUris.clear();
+                                      _importedZipFileNames.clear();
+                                      _statusMessage = '';
+                                    });
+                                  },
+                                  icon: const Icon(
+                                    Icons.delete_sweep_rounded,
+                                    color: Colors.redAccent,
+                                    size: 20,
+                                  ),
+                                ),
+                                Flexible(
+                                  child: Text(
+                                    '📦 ${_importedZipAccountUris.length} اکانت از ${_importedZipFileNames.length} فایل آماده ورود',
+                                    textDirection: TextDirection.rtl,
+                                    style: const TextStyle(
+                                      color: primaryAccent,
+                                      fontSize: 12.5,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            ConstrainedBox(
+                              constraints: const BoxConstraints(maxHeight: 92),
+                              child: SingleChildScrollView(
+                                child: Wrap(
+                                  spacing: 6,
+                                  runSpacing: 6,
+                                  alignment: WrapAlignment.end,
+                                  children: _importedZipAccountUris
+                                      .asMap()
+                                      .entries
+                                      .map((entry) {
+                                    final String label = NexusAccountRegistry
+                                        .instance
+                                        .getLabel(entry.value, entry.key);
+                                    return Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 9, vertical: 4),
+                                      decoration: BoxDecoration(
+                                        color: surfaceDark,
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                          color:
+                                              primaryAccent.withOpacity(0.25),
+                                        ),
+                                      ),
+                                      child: Text(
+                                        label,
+                                        style: const TextStyle(
+                                          color: textPrimary,
+                                          fontSize: 11.5,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    );
+                                  }).toList(),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 20),
                     SizedBox(
                       height: 56,
                       child: ElevatedButton(
@@ -293,18 +1461,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                           ),
                         ),
                         onPressed: _processLinks,
-                        child: const Row(
+                        child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             Text(
-                              'شروع پردازش سریع',
-                              style: TextStyle(
-                                fontSize: 16,
+                              _importedZipAccountUris.isNotEmpty
+                                  ? 'شروع پردازش سریع (${_importedZipAccountUris.length}+ حساب)'
+                                  : 'شروع پردازش سریع',
+                              style: const TextStyle(
+                                fontSize: 15.5,
                                 fontWeight: FontWeight.bold,
                               ),
                             ),
-                            SizedBox(width: 8),
-                            Icon(Icons.rocket_launch_rounded, size: 20),
+                            const SizedBox(width: 8),
+                            const Icon(Icons.rocket_launch_rounded, size: 20),
                           ],
                         ),
                       ),
@@ -338,6 +1508,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                               child: Text(
                                 _statusMessage,
                                 textAlign: TextAlign.right,
+                                textDirection: TextDirection.rtl,
                                 style: TextStyle(
                                   color: _isWarning
                                       ? Colors.redAccent
@@ -404,103 +1575,103 @@ class BrowserScreen extends StatefulWidget {
 class _BrowserScreenState extends State<BrowserScreen> {
   static int _globalSessionCounter = 0;
 
-  final http.Client _httpClient = http.Client();
-  InAppWebViewController? _webViewController;
-
+  late final List<String> _urls;
   int _currentIndex = 0;
-  int _sessionGeneration = 0;
   bool _isLoading = true;
   bool _hasError = false;
+  double _progress = 0;
   String _loadingMessage = 'در حال آماده‌سازی...';
-  double _progress = 0.0;
+
+  InAppWebViewController? _webViewController;
+  final http.Client _httpClient = http.Client();
 
   String _activeInjectionScript = '';
   String _activeBootstrapHtml = '';
   String _activeTargetKey = '';
+  String _activeAccountPhone = '';
+  String _activeAccountUserId = '';
+  String _activeAccountCerberusId = '';
+  int _sessionGeneration = 0;
 
   @override
   void initState() {
     super.initState();
+    _urls = List<String>.from(widget.urls);
     _loadAccount(0);
   }
 
   @override
   void dispose() {
     _httpClient.close();
-    _cleanupWebViewCache();
     super.dispose();
   }
 
-  /// پاکسازی کش دیسک و فایل‌های موقت وب‌ویو
   Future<void> _cleanupWebViewCache({bool showNotice = false}) async {
     try {
       await InAppWebViewController.clearAllCache(includeDiskFiles: true);
-      if (_webViewController != null) {
-        await _webViewController!.evaluateJavascript(source: '''
-          if ('caches' in window) {
-            caches.keys().then(function(names) {
-              for (var i = 0; i < names.length; i++) { caches.delete(names[i]); }
-            }).catch(function(){});
-          }
-          if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.getRegistrations().then(function(regs) {
-              for (var i = 0; i < regs.length; i++) { regs[i].unregister(); }
-            }).catch(function(){});
-          }
-        ''');
-      }
-      if (showNotice && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'کش و فایل‌های موقت مرورگر با موفقیت پاکسازی شد.',
-              style: TextStyle(color: bgDark, fontWeight: FontWeight.bold),
-            ),
-            backgroundColor: primaryAccent,
-            behavior: SnackBarBehavior.floating,
-            duration: Duration(seconds: 2),
-          ),
-        );
-      }
     } catch (_) {}
+
+    if (showNotice && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'کش و فایل‌های موقت وب‌ویو پاکسازی شد (نشست حساب حفظ شد).',
+            textDirection: TextDirection.rtl,
+            style: TextStyle(color: bgDark, fontWeight: FontWeight.bold),
+          ),
+          backgroundColor: primaryAccent,
+          behavior: SnackBarBehavior.floating,
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
   }
 
-  /// تبدیل اعداد فارسی و عربی به انگلیسی
   String _toEnglishDigits(String input) {
-    const persian = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
-    const arabic = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+    const Map<String, String> digitsMap = {
+      '۰': '0', '۱': '1', '۲': '2', '۳': '3', '۴': '4',
+      '۵': '5', '۶': '6', '۷': '7', '۸': '8', '۹': '9',
+      '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4',
+      '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9',
+    };
     String out = input;
-    for (int i = 0; i < 10; i++) {
-      out = out.replaceAll(persian[i], i.toString());
-      out = out.replaceAll(arabic[i], i.toString());
-    }
+    digitsMap.forEach((k, v) {
+      out = out.replaceAll(k, v);
+    });
     return out;
   }
 
-  /// پارس عدد صحیح مثبت (> 0)
-  int _parsePositiveInt(dynamic val) {
-    if (val == null) return 0;
-    if (val is int) return val > 0 ? val : 0;
-    final String cleaned = _toEnglishDigits(val.toString()).trim();
-    final int parsed = int.tryParse(cleaned) ?? 0;
-    return parsed > 0 ? parsed : 0;
+  int _parsePositiveInt(dynamic value) {
+    if (value == null) return 0;
+    if (value is int) return value > 0 ? value : 0;
+    if (value is num) return value.toInt() > 0 ? value.toInt() : 0;
+    final String s = _toEnglishDigits(value.toString()).trim();
+    if (s.isEmpty) return 0;
+    final int? parsed = int.tryParse(s);
+    return (parsed != null && parsed > 0) ? parsed : 0;
   }
 
-  /// استخراج Payload از توکن JWT
   Map<String, dynamic> _decodeJwtPayload(String? token) {
-    if (token == null || token.isEmpty || !token.contains('.')) return {};
+    if (token == null || token.isEmpty || !token.contains('.')) {
+      return {};
+    }
     try {
-      final parts = token.split('.');
+      final List<String> parts = token.split('.');
       if (parts.length < 2) return {};
-      final String normalized = base64Url.normalize(parts[1]);
-      final String decoded = utf8.decode(base64Url.decode(normalized));
-      final dynamic map = jsonDecode(decoded);
-      if (map is Map<String, dynamic>) return map;
+      String normalized =
+          parts[1].replaceAll('-', '+').replaceAll('_', '/').trim();
+      while (normalized.length % 4 != 0) {
+        normalized += '=';
+      }
+      final String decodedStr = utf8.decode(base64Decode(normalized));
+      final dynamic decodedJson = jsonDecode(decodedStr);
+      if (decodedJson is Map<String, dynamic>) {
+        return decodedJson;
+      }
     } catch (_) {}
     return {};
   }
 
-  /// بررسی وجود کلیم‌های Voyager در توکن JWT
   bool _hasVoyagerClaims(String? token) {
     final Map<String, dynamic> p = _decodeJwtPayload(token);
     if (p.isEmpty) return false;
@@ -510,7 +1681,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
         p.containsKey('tenant');
   }
 
-  /// ارتقای توکن به توکن کامل Voyager از طریق customer_token_exchange_grant_type (مطابق ماژول 18726 اوکالا)
   Future<String?> _exchangeForVoyagerToken(String token) async {
     try {
       final http.Response response = await _httpClient
@@ -549,37 +1719,58 @@ class _BrowserScreenState extends State<BrowserScreen> {
     return null;
   }
 
-  /// اگر Access Token فعلی معتبر است، بدون سوزاندن Refresh Token همان را نگه می‌دارد؛
-  /// فقط در صورتی که Access Token منقضی شده باشد با Refresh Token آن را نوسازی می‌کند.
-  Future<String?> _ensureValidAccessToken(
-      String? accessToken, String? refreshToken) async {
+  /// بررسی و نوسازی هوشمند توکن برای لینک‌ها و فایل‌های ZIP
+  /// با حفظ کامل Refresh Token چرخش‌یافته و کلیم‌های Voyager (مطابق منطق Main1.py)
+  Future<_TokenPairResult> _ensureValidAccessToken(
+      String? accessToken, List<String> candidateRefreshTokens) async {
     String? cleanAccess = accessToken?.trim();
     if (cleanAccess != null &&
         cleanAccess.toLowerCase().startsWith('bearer ')) {
       cleanAccess = cleanAccess.substring(7).trim();
     }
 
+    final List<String> validRefreshList = [];
+    for (final String r in candidateRefreshTokens) {
+      final String trimmed = r.trim();
+      if (trimmed.isNotEmpty && !validRefreshList.contains(trimmed)) {
+        validRefreshList.add(trimmed);
+      }
+    }
+    final String? primaryRefresh =
+        validRefreshList.isNotEmpty ? validRefreshList.first : null;
+
     final int nowSec = DateTime.now().millisecondsSinceEpoch ~/ 1000;
     if (cleanAccess != null && cleanAccess.isNotEmpty) {
       final Map<String, dynamic> jwt = _decodeJwtPayload(cleanAccess);
       final int exp = _parsePositiveInt(jwt['exp']);
-      // اگر توکن فعلی هنوز بیش از ۳ دقیقه اعتبار دارد، به هیچ وجه آن را با رفرش‌توکن نسوزانیم
+      // اگر توکن فعلی هنوز بیش از ۳ دقیقه اعتبار دارد، رفرش‌توکن را نسوزانیم
       if (exp > nowSec + 180) {
         if (!_hasVoyagerClaims(cleanAccess)) {
           final String? exchanged = await _exchangeForVoyagerToken(cleanAccess);
           if (exchanged != null && _hasVoyagerClaims(exchanged)) {
-            return exchanged;
+            return _TokenPairResult(
+              accessToken: exchanged,
+              refreshToken: primaryRefresh,
+              wasRefreshed: true,
+            );
           }
         }
-        return cleanAccess;
+        return _TokenPairResult(
+          accessToken: cleanAccess,
+          refreshToken: primaryRefresh,
+          wasRefreshed: false,
+        );
       }
     }
 
-    if (refreshToken == null || refreshToken.trim().isEmpty) {
-      return cleanAccess;
+    if (validRefreshList.isEmpty) {
+      return _TokenPairResult(
+        accessToken: cleanAccess,
+        refreshToken: null,
+        wasRefreshed: false,
+      );
     }
 
-    final String cleanRefresh = refreshToken.trim();
     final Map<String, String> baseHeaders = {
       'accept': 'application/json, text/plain, */*',
       'source': 'okala',
@@ -587,60 +1778,127 @@ class _BrowserScreenState extends State<BrowserScreen> {
       'origin': 'https://www.okala.com',
       'content-type': 'application/x-www-form-urlencoded',
       'advertising_id': '',
+      'User-Agent': customUserAgent,
     };
 
-    final Map<String, String> bodyData = {
-      'grant_type': 'refresh_token',
-      'client_id': 'customer_client_id',
-      'client_secret': "u_M{'57j!%LI21#",
-      'scope': 'offline_access',
-      'refresh_token': cleanRefresh,
-    };
+    for (final String cleanRefresh in validRefreshList) {
+      final Map<String, String> bodyData = {
+        'grant_type': 'refresh_token',
+        'client_id': 'customer_client_id',
+        'client_secret': "u_M{'57j!%LI21#",
+        'scope': 'offline_access',
+        'refresh_token': cleanRefresh,
+      };
 
-    try {
-      final Map<String, String> headersWithAuth =
-          Map<String, String>.from(baseHeaders);
-      if (cleanAccess != null && cleanAccess.isNotEmpty) {
-        headersWithAuth['Authorization'] = 'Bearer $cleanAccess';
-      }
+      try {
+        final Map<String, String> headersWithAuth =
+            Map<String, String>.from(baseHeaders);
+        if (cleanAccess != null && cleanAccess.isNotEmpty) {
+          headersWithAuth['Authorization'] = 'Bearer $cleanAccess';
+        }
 
-      http.Response response = await _httpClient
-          .post(
-            Uri.parse('https://apigateway.okala.com/api/v1/accounts/tokens'),
-            headers: headersWithAuth,
-            body: bodyData,
-          )
-          .timeout(const Duration(seconds: 5));
-
-      if (response.statusCode == 401 &&
-          headersWithAuth.containsKey('Authorization')) {
-        response = await _httpClient
+        http.Response response = await _httpClient
             .post(
               Uri.parse('https://apigateway.okala.com/api/v1/accounts/tokens'),
-              headers: baseHeaders,
+              headers: headersWithAuth,
               body: bodyData,
             )
-            .timeout(const Duration(seconds: 5));
-      }
+            .timeout(const Duration(seconds: 6));
 
-      if (response.statusCode == 200) {
-        final dynamic bodyJson = jsonDecode(utf8.decode(response.bodyBytes));
-        if (bodyJson is Map) {
-          String? newAcc = bodyJson['access_token']?.toString();
-          if (newAcc != null && newAcc.isNotEmpty) {
-            if (!_hasVoyagerClaims(newAcc)) {
-              final String? exchanged = await _exchangeForVoyagerToken(newAcc);
-              if (exchanged != null && exchanged.isNotEmpty) {
-                newAcc = exchanged;
+        if ((response.statusCode == 401 || response.statusCode == 400) &&
+            headersWithAuth.containsKey('Authorization')) {
+          response = await _httpClient
+              .post(
+                Uri.parse(
+                    'https://apigateway.okala.com/api/v1/accounts/tokens'),
+                headers: baseHeaders,
+                body: bodyData,
+              )
+              .timeout(const Duration(seconds: 6));
+        }
+
+        if (response.statusCode == 200) {
+          final dynamic bodyJson =
+              jsonDecode(utf8.decode(response.bodyBytes));
+          if (bodyJson is Map) {
+            String? newAcc = bodyJson['access_token']?.toString();
+            final String? newRef = bodyJson['refresh_token']?.toString();
+            if (newAcc != null && newAcc.isNotEmpty) {
+              if (!_hasVoyagerClaims(newAcc)) {
+                final String? exchanged =
+                    await _exchangeForVoyagerToken(newAcc);
+                if (exchanged != null && exchanged.isNotEmpty) {
+                  newAcc = exchanged;
+                }
               }
+              return _TokenPairResult(
+                accessToken: newAcc,
+                refreshToken: (newRef != null && newRef.isNotEmpty)
+                    ? newRef
+                    : cleanRefresh,
+                wasRefreshed: true,
+              );
             }
-            return newAcc;
           }
         }
+      } catch (_) {}
+    }
+
+    // اگر رفرش‌توکن فایل زیپ قبلاً در ربات مصرف شده بود، یک بار هم تبادل مستقیم توکن امتحان شود
+    if (cleanAccess != null && cleanAccess.isNotEmpty) {
+      final String? exchanged = await _exchangeForVoyagerToken(cleanAccess);
+      if (exchanged != null && exchanged.isNotEmpty) {
+        return _TokenPairResult(
+          accessToken: exchanged,
+          refreshToken: primaryRefresh,
+          wasRefreshed: true,
+        );
+      }
+    }
+
+    return _TokenPairResult(
+      accessToken: cleanAccess,
+      refreshToken: primaryRefresh,
+      wasRefreshed: false,
+    );
+  }
+
+  /// جایگزینی کامل توکن قدیمی با توکن جدید در ساختار JSON اکانت (برای پایداری کامل اکانت‌های ZIP در حافظه)
+  Map<String, dynamic> _updateTokensInAccountData(
+    Map<String, dynamic> origData,
+    String? oldAccess,
+    String? newAccess,
+    String? oldRefresh,
+    String? newRefresh,
+  ) {
+    try {
+      String serialized = jsonEncode(origData);
+      if (oldAccess != null &&
+          oldAccess.isNotEmpty &&
+          newAccess != null &&
+          newAccess.isNotEmpty &&
+          oldAccess != newAccess) {
+        serialized = serialized.replaceAll(oldAccess, newAccess);
+      }
+      if (oldRefresh != null &&
+          oldRefresh.isNotEmpty &&
+          newRefresh != null &&
+          newRefresh.isNotEmpty &&
+          oldRefresh != newRefresh) {
+        serialized = serialized.replaceAll(oldRefresh, newRefresh);
+      }
+      final dynamic decoded = jsonDecode(serialized);
+      if (decoded is Map<String, dynamic>) {
+        if (newAccess != null && newAccess.isNotEmpty) {
+          decoded['access_token'] = newAccess;
+        }
+        if (newRefresh != null && newRefresh.isNotEmpty) {
+          decoded['refresh_token'] = newRefresh;
+        }
+        return decoded;
       }
     } catch (_) {}
-
-    return cleanAccess;
+    return origData;
   }
 
   /// دریافت لیست آدرس‌های ثبت‌شده کاربر از سرور اوکالا
@@ -1634,11 +2892,21 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
               if (bffObj.auth && typeof bffObj.auth === 'object') {
                 var newTok = bffObj.auth.access_token || bffObj.auth.accessToken || bffObj.auth.token || bffObj.auth.tokenMS;
+                var newRef = bffObj.auth.refresh_token || bffObj.auth.refreshToken || '';
                 if (typeof newTok === 'string' && newTok.length > 20) {
                   st.tMs = newTok;
+                  if (newRef) st.rTk = newRef;
                   origSetItem.call(localStorage, 'token', newTok);
                   origSetItem.call(localStorage, 'tokenMS', newTok);
                   syncCookiesNow();
+                  try {
+                    if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
+                      window.flutter_inappwebview.callHandler('onTokenRefreshed', {
+                        accessToken: newTok,
+                        refreshToken: newRef || st.rTk || ''
+                      });
+                    }
+                  } catch (_) {}
                 }
               }
               bffObj.auth = null;
@@ -2329,6 +3597,28 @@ class _BrowserScreenState extends State<BrowserScreen> {
                     if (isBffUrl(urlStr)) {
                       var bffClone = response.clone();
                       return bffClone.text().then(function(txt) {
+                        try {
+                          var checkParsed = JSON.parse(txt);
+                          var missStores = urlStr.indexOf('stores') !== -1 &&
+                            (!checkParsed || !checkParsed.data || !checkParsed.data.stores);
+                          if (missStores) {
+                            return origFetch.call(window, urlStr, { credentials: 'omit' }).then(function(pubResp) {
+                              return pubResp.text().then(function(pubTxt) {
+                                return new Response(repairBffResponseText(pubTxt), {
+                                  status: 200,
+                                  statusText: 'OK',
+                                  headers: { 'Content-Type': 'application/json; charset=utf-8' }
+                                });
+                              });
+                            }).catch(function() {
+                              return new Response(repairBffResponseText(txt), {
+                                status: 200,
+                                statusText: 'OK',
+                                headers: response.headers
+                              });
+                            });
+                          }
+                        } catch (_) {}
                         var repairedBff = repairBffResponseText(txt);
                         return new Response(repairedBff, {
                           status: 200,
@@ -2679,11 +3969,63 @@ class _BrowserScreenState extends State<BrowserScreen> {
 </html>''';
   }
 
+  Future<Map<String, dynamic>> _resolveAccountPayload(
+      int index, int currentGen) async {
+    final String target = _urls[index];
+    if (NexusAccountRegistry.instance.isLocalUri(target)) {
+      final Map<String, dynamic>? localData =
+          NexusAccountRegistry.instance.getAccountData(target);
+      if (localData == null) {
+        throw Exception('اطلاعات این اکانت ZIP در حافظه یافت نشد.');
+      }
+      return localData;
+    }
+
+    final http.Response response = await _httpClient
+        .get(Uri.parse(target))
+        .timeout(const Duration(seconds: 15));
+
+    if (response.statusCode != 200) {
+      throw Exception('پاسخ نامعتبر از سرور (کد ${response.statusCode})');
+    }
+
+    final Uint8List bodyBytes = response.bodyBytes;
+    // اگر لینک واردشده مستقیماً یک فایل ZIP بود، تمام اکانت‌های داخل آن استخراج و جایگزین شوند
+    if (NexusZipExtractor.isZipBytes(bodyBytes)) {
+      final ZipExtractionSummary summary =
+          NexusZipExtractor.extractFromFileBytes(
+        fileName: target.split('/').last,
+        bytes: bodyBytes,
+      );
+      if (summary.accountUris.isNotEmpty) {
+        if (mounted && currentGen == _sessionGeneration) {
+          setState(() {
+            _urls.removeAt(index);
+            _urls.insertAll(index, summary.accountUris);
+          });
+        }
+        final Map<String, dynamic>? firstAcc = NexusAccountRegistry.instance
+            .getAccountData(summary.accountUris.first);
+        if (firstAcc != null) return firstAcc;
+      }
+      throw Exception('فایل ZIP دانلودشده فاقد اکانت معتبر بود.');
+    }
+
+    final dynamic decoded = json.decode(utf8.decode(bodyBytes));
+    if (decoded is! Map<String, dynamic>) {
+      throw Exception('ساختار داده دریافتی معتبر نیست.');
+    }
+    return decoded;
+  }
+
   Future<void> _loadAccount(int index) async {
-    if (!mounted) return;
+    if (!mounted || index < 0 || index >= _urls.length) return;
     _sessionGeneration++;
     _globalSessionCounter++;
     final int currentGen = _sessionGeneration;
+    final String currentTargetUri = _urls[index];
+    final String currentLabel =
+        NexusAccountRegistry.instance.getLabel(currentTargetUri, index);
     final String targetKey =
         '__nx_acc_${index}_${currentGen}_${_globalSessionCounter}_${DateTime.now().microsecondsSinceEpoch}';
 
@@ -2691,7 +4033,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
       _isLoading = true;
       _hasError = false;
       _progress = 0.1;
-      _loadingMessage = 'در حال دریافت اطلاعات حساب ${index + 1}...';
+      _loadingMessage = 'در حال آماده‌سازی $currentLabel...';
       _currentIndex = index;
     });
 
@@ -2709,23 +4051,13 @@ class _BrowserScreenState extends State<BrowserScreen> {
         cookieManager.deleteAllCookies(),
         webStorageManager.deleteAllData(),
         InAppWebViewController.clearAllCache(includeDiskFiles: true),
-        _httpClient
-            .get(Uri.parse(widget.urls[index]))
-            .timeout(const Duration(seconds: 15)),
+        _resolveAccountPayload(index, currentGen),
       ]);
 
       if (!mounted || currentGen != _sessionGeneration) return;
 
-      final http.Response response = results[3] as http.Response;
-      if (response.statusCode != 200) {
-        throw Exception('پاسخ نامعتبر از سرور (کد ${response.statusCode})');
-      }
-
-      final dynamic decoded = json.decode(utf8.decode(response.bodyBytes));
-      if (decoded is! Map<String, dynamic>) {
-        throw Exception('ساختار داده دریافتی معتبر نیست.');
-      }
-      final Map<String, dynamic> data = decoded;
+      final Map<String, dynamic> data = results[3] as Map<String, dynamic>;
+      final String resolvedTargetUri = _urls[_currentIndex];
 
       List<dynamic> rawLocalData = [];
       if (data['origins'] is List && (data['origins'] as List).isNotEmpty) {
@@ -2749,6 +4081,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
       String? rawUserValue;
       String? rawPersistRootValue;
       final List<String> tokenCandidates = [];
+      final List<String> refreshCandidates = [];
 
       if (data['access_token'] is String &&
           (data['access_token'] as String).isNotEmpty) {
@@ -2757,6 +4090,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
       if (data['refresh_token'] is String &&
           (data['refresh_token'] as String).isNotEmpty) {
         rTk = data['refresh_token'] as String;
+        refreshCandidates.add(rTk);
       }
 
       final List<dynamic> cookies =
@@ -2768,8 +4102,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
           if (val == null || val.isEmpty) continue;
           if (name == 'tokenMS' || name == 'token') {
             tokenCandidates.add(val);
-          } else if (name == 'refresh_token' && (rTk == null || rTk.isEmpty)) {
-            rTk = val;
+          } else if (name == 'refresh_token') {
+            rTk ??= val;
+            if (!refreshCandidates.contains(val)) refreshCandidates.add(val);
           } else if (name == 'user') {
             rawUserValue = val;
           }
@@ -2783,8 +4118,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
           if (val == null || val.isEmpty) continue;
           if (name == 'tokenMS' || name == 'token') {
             tokenCandidates.add(val);
-          } else if (name == 'refresh_token' && (rTk == null || rTk.isEmpty)) {
-            rTk = val;
+          } else if (name == 'refresh_token') {
+            rTk ??= val;
+            if (!refreshCandidates.contains(val)) refreshCandidates.add(val);
           } else if (name == 'user') {
             rawUserValue ??= val;
             try {
@@ -2817,7 +4153,39 @@ class _BrowserScreenState extends State<BrowserScreen> {
         }
       }
 
+      // استخراج اولیه شناسه و شماره موبایل اکانت جهت بازیابی توکن‌های چرخش‌یافته قبلی از NexusTokenVault
+      String? initialPhone = NexusZipExtractor.extractPhoneFromAccountData(
+          data, resolvedTargetUri);
+      String? initialUid;
+      String? initialCerbId;
+      for (final String cand in tokenCandidates) {
+        final Map<String, dynamic> p = _decodeJwtPayload(cand);
+        initialUid ??= (p['userId'] ?? p['sub'])?.toString();
+        initialCerbId ??= p['cerberusId']?.toString();
+        initialPhone ??=
+            (p['mobilePhone'] ?? p['username'] ?? p['userName'])?.toString();
+      }
+
+      final Map<String, String>? vaulted = NexusTokenVault.instance.lookup(
+        phone: initialPhone,
+        userId: initialUid,
+        cerberusId: initialCerbId,
+        targetUri: resolvedTargetUri,
+      );
+      if (vaulted != null) {
+        final String? vAcc = vaulted['accessToken'];
+        final String? vRef = vaulted['refreshToken'];
+        if (vAcc != null && vAcc.isNotEmpty) {
+          tokenCandidates.insert(0, vAcc);
+        }
+        if (vRef != null && vRef.isNotEmpty) {
+          refreshCandidates.insert(0, vRef);
+          rTk = vRef;
+        }
+      }
+
       // انتخاب بهترین Access Token (دارای کلیم‌های Voyager و بیشترین زمان انقضا exp)
+      String? origBestToken;
       int bestScore = -1;
       int bestExp = -1;
       for (final String cand in tokenCandidates) {
@@ -2832,12 +4200,19 @@ class _BrowserScreenState extends State<BrowserScreen> {
           bestScore = score;
           bestExp = expVal;
           tMs = cand;
+          origBestToken ??= cand;
         }
       }
 
-      // اطمینان از معتبر بودن Access Token (بدون سوزاندن بی‌مورد Refresh Token در صورت معتبر بودن توکن فعلی)
-      tMs = await _ensureValidAccessToken(tMs, rTk);
+      // اطمینان از معتبر بودن Access Token و ذخیره فوری Refresh Token چرخش‌یافته برای اکانت‌های ZIP و لینک
+      final _TokenPairResult tokenResult =
+          await _ensureValidAccessToken(tMs, refreshCandidates);
       if (!mounted || currentGen != _sessionGeneration) return;
+
+      final String? oldTMs = tMs;
+      final String? oldRTk = rTk;
+      tMs = tokenResult.accessToken;
+      rTk = tokenResult.refreshToken ?? rTk;
 
       // استخراج آبجکت اولیه user
       Map<String, dynamic> cleanUserMap = {};
@@ -2863,6 +4238,44 @@ class _BrowserScreenState extends State<BrowserScreen> {
       }
 
       _normalizeUserMap(cleanUserMap, tMs);
+
+      final String resolvedPhone =
+          (cleanUserMap['mobilePhone'] ?? initialPhone ?? '').toString().trim();
+      final String resolvedUid =
+          (cleanUserMap['id'] ?? initialUid ?? '').toString().trim();
+      final String resolvedCerb =
+          (cleanUserMap['alternativeId'] ?? initialCerbId ?? '')
+              .toString()
+              .trim();
+
+      _activeAccountPhone = resolvedPhone;
+      _activeAccountUserId = resolvedUid;
+      _activeAccountCerberusId = resolvedCerb;
+
+      if (resolvedPhone.isNotEmpty) {
+        NexusAccountRegistry.instance
+            .setLabel(resolvedTargetUri, resolvedPhone);
+      }
+
+      // ذخیره توکن نوسازی‌شده در NexusTokenVault و رجیستری اکانت‌های ZIP
+      if (tokenResult.wasRefreshed ||
+          (tMs != null && tMs.isNotEmpty) ||
+          (rTk != null && rTk.isNotEmpty)) {
+        await NexusTokenVault.instance.save(
+          phone: resolvedPhone,
+          userId: resolvedUid,
+          cerberusId: resolvedCerb,
+          targetUri: resolvedTargetUri,
+          accessToken: tMs,
+          refreshToken: rTk,
+        );
+        if (NexusAccountRegistry.instance.isLocalUri(resolvedTargetUri)) {
+          final Map<String, dynamic> updatedAccData =
+              _updateTokensInAccountData(data, oldTMs, tMs, oldRTk, rTk);
+          NexusAccountRegistry.instance
+              .updateAccountData(resolvedTargetUri, updatedAccData);
+        }
+      }
 
       // فعال‌سازی پروفایل در Voyager (UpdateCustomer) و دریافت همزمان آدرس‌های ثبت‌شده کاربر
       final int initialCid = _parsePositiveInt(
@@ -2952,7 +4365,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
             .add({'name': 'city_name', 'value': defaultCityName});
       }
 
-      // ۳. ثبت کوکی‌ها روی دامنه www.okala.com، .okala.com و apigateway.okala.com (بدون کوکی refresh_token)
+      // ۳. ثبت کوکی‌ها روی دامنه www.okala.com، .okala.com و apigateway.okala.com
       final WebUri storeUri = WebUri('https://$storeHost/');
       final WebUri apiGatewayUri = WebUri('https://apigateway.okala.com/');
       final int futureExpiresMs =
@@ -3101,7 +4514,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
             injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
           ),
         );
-        // اجرای صفحه بوت‌استرپ روی دامنه https://www.okala.com/ تا قبل از اجرای Next.js تمام مقادیر localStorage و sessionStorage اکانت جدید ثبت شوند
         await _webViewController!.loadData(
           data: _activeBootstrapHtml,
           mimeType: 'text/html',
@@ -3127,7 +4539,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
   }
 
   void _nextAccount() {
-    if (_currentIndex < widget.urls.length - 1) {
+    if (_currentIndex < _urls.length - 1) {
       _loadAccount(_currentIndex + 1);
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -3149,8 +4561,94 @@ class _BrowserScreenState extends State<BrowserScreen> {
     }
   }
 
+  void _showAddMoreZipModal() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: surfaceDark,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (sheetCtx) {
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'افزودن فایل ZIP / JSON جدید به لیست فعلی',
+                textAlign: TextAlign.center,
+                textDirection: TextDirection.rtl,
+                style: TextStyle(
+                  color: textPrimary,
+                  fontSize: 15.5,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 16),
+              NexusFilePickerButton(
+                onFilesExtracted: (summaries) {
+                  int added = 0;
+                  int firstNewIdx = _urls.length;
+                  setState(() {
+                    for (final ZipExtractionSummary s in summaries) {
+                      for (final String u in s.accountUris) {
+                        if (!_urls.contains(u)) {
+                          _urls.add(u);
+                          added++;
+                        }
+                      }
+                      for (final String l in s.extractedLinks) {
+                        if (!_urls.contains(l)) {
+                          _urls.add(l);
+                          added++;
+                        }
+                      }
+                    }
+                  });
+                  if (Navigator.canPop(sheetCtx)) {
+                    Navigator.pop(sheetCtx);
+                  }
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          added > 0
+                              ? '$added حساب جدید از فایل ZIP اضافه شد.'
+                              : 'اکانت جدیدی یافت نشد (یا قبلاً در لیست موجود است).',
+                          textDirection: TextDirection.rtl,
+                          style: const TextStyle(
+                              color: bgDark, fontWeight: FontWeight.bold),
+                        ),
+                        backgroundColor:
+                            added > 0 ? primaryAccent : Colors.orangeAccent,
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                    if (added > 0 && firstNewIdx < _urls.length) {
+                      _loadAccount(firstNewIdx);
+                    }
+                  }
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final String activeUri =
+        (_currentIndex >= 0 && _currentIndex < _urls.length)
+            ? _urls[_currentIndex]
+            : '';
+    final String activeLabel =
+        NexusAccountRegistry.instance.getLabel(activeUri, _currentIndex);
+    final bool hasCustomPhoneLabel =
+        !activeLabel.startsWith('حساب کاربری ');
+
     return PopScope(
       canPop: false,
       onPopInvoked: (didPop) async {
@@ -3166,9 +4664,11 @@ class _BrowserScreenState extends State<BrowserScreen> {
         backgroundColor: bgDark,
         appBar: AppBar(
           title: Text(
-            'حساب ${_currentIndex + 1} از ${widget.urls.length}',
+            hasCustomPhoneLabel
+                ? 'حساب ${_currentIndex + 1} از ${_urls.length} ($activeLabel)'
+                : 'حساب ${_currentIndex + 1} از ${_urls.length}',
             style: const TextStyle(
-              fontSize: 15,
+              fontSize: 14,
               fontWeight: FontWeight.w700,
               color: textPrimary,
             ),
@@ -3178,6 +4678,12 @@ class _BrowserScreenState extends State<BrowserScreen> {
           iconTheme: const IconThemeData(color: textPrimary),
           centerTitle: true,
           actions: [
+            IconButton(
+              tooltip: 'افزودن فایل ZIP جدید',
+              onPressed: _showAddMoreZipModal,
+              icon: const Icon(Icons.folder_zip_outlined,
+                  size: 21, color: primaryAccent),
+            ),
             IconButton(
               tooltip: 'پاکسازی کش و حافظه',
               onPressed: () => _cleanupWebViewCache(showNotice: true),
@@ -3197,7 +4703,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
                 icon: const Icon(Icons.arrow_back_ios_new_rounded,
                     size: 18, color: primaryAccent),
               ),
-            if (_currentIndex < widget.urls.length - 1)
+            if (_currentIndex < _urls.length - 1)
               Padding(
                 padding: const EdgeInsets.only(right: 4.0, left: 6.0),
                 child: TextButton(
@@ -3235,7 +4741,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
             children: [
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.only(top: 56, bottom: 24),
+                padding: const EdgeInsets.only(top: 56, bottom: 20),
                 decoration: const BoxDecoration(
                   color: bgDark,
                   border:
@@ -3278,7 +4784,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
                         borderRadius: BorderRadius.circular(20),
                       ),
                       child: Text(
-                        '${widget.urls.length} پیوند فعال',
+                        '${_urls.length} حساب فعال (لینک و ZIP)',
+                        textDirection: TextDirection.rtl,
                         style: const TextStyle(
                           color: primaryAccent,
                           fontSize: 12,
@@ -3289,13 +4796,43 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   ],
                 ),
               ),
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: primaryAccent,
+                    side: BorderSide(color: primaryAccent.withOpacity(0.5)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  onPressed: () {
+                    Navigator.pop(context);
+                    _showAddMoreZipModal();
+                  },
+                  icon: const Icon(Icons.folder_zip_rounded, size: 18),
+                  label: const Text(
+                    'افزودن فایل ZIP جدید',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                  ),
+                ),
+              ),
               Expanded(
                 child: ListView.separated(
-                  itemCount: widget.urls.length,
+                  itemCount: _urls.length,
                   separatorBuilder: (context, index) =>
                       Divider(color: bgDark.withOpacity(0.5), height: 1),
                   itemBuilder: (context, index) {
-                    final isActive = index == _currentIndex;
+                    final bool isActive = index == _currentIndex;
+                    final String itemUri = _urls[index];
+                    final bool isZipItem =
+                        NexusAccountRegistry.instance.isLocalUri(itemUri);
+                    final String label = NexusAccountRegistry.instance
+                        .getLabel(itemUri, index);
+                    final String? srcFile = NexusAccountRegistry.instance
+                        .getSourceName(itemUri);
+
                     return ListTile(
                       contentPadding: const EdgeInsets.symmetric(
                           horizontal: 20, vertical: 4),
@@ -3318,12 +4855,43 @@ class _BrowserScreenState extends State<BrowserScreen> {
                         ),
                       ),
                       title: Text(
-                        'حساب کاربری ${index + 1}',
+                        label.startsWith('حساب کاربری ')
+                            ? label
+                            : 'حساب ${index + 1} — $label',
                         style: TextStyle(
                           color: isActive ? textPrimary : textSecondary,
                           fontWeight:
                               isActive ? FontWeight.bold : FontWeight.normal,
-                          fontSize: 14,
+                          fontSize: 13.5,
+                        ),
+                      ),
+                      subtitle: srcFile != null
+                          ? Text(
+                              '📦 $srcFile',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: textSecondary.withOpacity(0.7),
+                                fontSize: 11,
+                              ),
+                            )
+                          : null,
+                      trailing: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 7, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: (isZipItem ? primaryAccent : Colors.blueAccent)
+                              .withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          isZipItem ? 'ZIP' : 'LINK',
+                          style: TextStyle(
+                            color:
+                                isZipItem ? primaryAccent : Colors.blueAccent,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
                       selected: isActive,
@@ -3379,6 +4947,28 @@ class _BrowserScreenState extends State<BrowserScreen> {
               ),
               onWebViewCreated: (controller) async {
                 _webViewController = controller;
+                controller.addJavaScriptHandler(
+                  handlerName: 'onTokenRefreshed',
+                  callback: (args) async {
+                    if (args.isNotEmpty && args.first is Map) {
+                      final Map data = args.first as Map;
+                      final String? newAcc = data['accessToken']?.toString();
+                      final String? newRef = data['refreshToken']?.toString();
+                      final String curUri = (_currentIndex >= 0 &&
+                              _currentIndex < _urls.length)
+                          ? _urls[_currentIndex]
+                          : '';
+                      await NexusTokenVault.instance.save(
+                        phone: _activeAccountPhone,
+                        userId: _activeAccountUserId,
+                        cerberusId: _activeAccountCerberusId,
+                        targetUri: curUri,
+                        accessToken: newAcc,
+                        refreshToken: newRef,
+                      );
+                    }
+                  },
+                );
                 if (_activeInjectionScript.isNotEmpty &&
                     _activeBootstrapHtml.isNotEmpty) {
                   await controller.addUserScript(
