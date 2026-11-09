@@ -1591,6 +1591,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
   String _activeAccountPhone = '';
   String _activeAccountUserId = '';
   String _activeAccountCerberusId = '';
+  String? _activeTokenMs;
   int _sessionGeneration = 0;
 
   @override
@@ -2005,6 +2006,95 @@ class _BrowserScreenState extends State<BrowserScreen> {
     return null;
   }
 
+  /// ثبت مستقیم آدرس در سرور Voyager (مطابق منطق دقیق Main1.py) در صورتی که اکانت فاقد آدرس واقعی روی سرور باشد
+  Future<Map<String, dynamic>?> _createServerAddressAndFetchList(
+      String? tokenMs, int customerId, Map<String, dynamic> addrDraft) async {
+    final String? tok =
+        (tokenMs != null && tokenMs.isNotEmpty) ? tokenMs : _activeTokenMs;
+    if (tok == null || tok.isEmpty) return null;
+
+    int cid = customerId;
+    if (cid <= 0) {
+      cid = _parsePositiveInt(_activeAccountUserId);
+    }
+    if (cid <= 0) {
+      final Map<String, dynamic> jwt = _decodeJwtPayload(tok);
+      cid = _parsePositiveInt(
+          jwt['userId'] ?? jwt['alternativeCustomerId'] ?? jwt['sub']);
+    }
+
+    // ابتدا بررسی کنیم آیا آدرس همین الان روی سرور ذخیره شده است یا خیر
+    Map<String, dynamic>? existing = await _fetchUserAddressesFromApi(tok, cid);
+    if (existing != null) {
+      return existing;
+    }
+
+    final String plaqueVal =
+        _toEnglishDigits((addrDraft['plaque'] ?? '1').toString()).trim();
+    final String unitVal =
+        _toEnglishDigits((addrDraft['unit'] ?? '1').toString()).trim();
+    final double latVal =
+        double.tryParse((addrDraft['lat'] ?? '').toString()) ?? 35.7005;
+    final double lngVal =
+        double.tryParse((addrDraft['lng'] ?? '').toString()) ?? 51.3455;
+    String addressText = (addrDraft['address'] ?? '').toString().trim();
+    if (addressText.isEmpty) {
+      addressText = 'تهران، خیابان آزادی، خیابان جیحون';
+    }
+    final int cityIdVal = _parsePositiveInt(addrDraft['cityId']) > 0
+        ? _parsePositiveInt(addrDraft['cityId'])
+        : 129;
+
+    final Map<String, dynamic> payload = {
+      'id': 0,
+      'customerId': cid,
+      'mobilePhone': '',
+      'ShoppingSectorPartId': '0',
+      'shoppingSectorId': '0',
+      'plaque': plaqueVal.isEmpty ? '1' : plaqueVal,
+      'unit': unitVal.isEmpty ? '1' : unitVal,
+      'lat': latVal,
+      'lng': lngVal,
+      'title': null,
+      'addressTypeId': 3,
+      'oprationDuration': 14500,
+      'address': addressText,
+      'mapPlatform': 'ParsiMap',
+      'cityId': cityIdVal,
+    };
+
+    final Map<String, String> headers = {
+      'Accept': 'application/json, text/plain, */*',
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer $tok',
+      'source': 'okala',
+      'ui-version': '2.0',
+      'Origin': 'https://www.okala.com',
+      'Referer': 'https://www.okala.com/',
+    };
+
+    for (final String url in [
+      'https://apigateway.okala.com/api/voyager/C/CustomerAccount/AddAddress/',
+      'https://apigateway.okala.com/api/voyager/C/CustomerAddress/AddAddress',
+    ]) {
+      try {
+        final http.Response r = await _httpClient
+            .post(
+              Uri.parse(url),
+              headers: headers,
+              body: jsonEncode(payload),
+            )
+            .timeout(const Duration(seconds: 5));
+        if (r.statusCode == 200) {
+          break;
+        }
+      } catch (_) {}
+    }
+
+    existing = await _fetchUserAddressesFromApi(tok, cid);
+    return existing;
+  }
+
   /// فعال‌سازی پروفایل اکانت‌های خام در سرور Voyager (UpdateCustomer) و استخراج شناسه عددی مشتری (id)
   /// مطابق منطق Main1.py: اکانت‌های خامی که در سرور نام ندارند هنگام ثبت آدرس با خطای «مشکلی در اقلام دریافتی وجود دارد» مواجه می‌شوند.
   Future<void> _ensureCustomerProfileInVoyager(
@@ -2187,8 +2277,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
     userMap['customerIsLoggedInForFirstTime'] = false;
     userMap['state'] = true;
     userMap['stateCode'] = 1;
-    userMap['hasAddress'] =
-        firstAddr != null ? true : (userMap['hasAddress'] ?? false);
+    userMap['hasAddress'] = true;
 
     if (tokenMs != null && tokenMs.isNotEmpty && userMap.containsKey('token')) {
       userMap['token'] = tokenMs;
@@ -2310,6 +2399,22 @@ class _BrowserScreenState extends State<BrowserScreen> {
       'mapPlatform': 'ParsiMap',
     });
 
+    if (addressResponse != null &&
+        addressResponse['data'] is Map &&
+        (addressResponse['data']['customerAddressResponseItems'] is List) &&
+        (addressResponse['data']['customerAddressResponseItems'] as List)
+            .isNotEmpty) {
+      final dynamic firstAddr =
+          (addressResponse['data']['customerAddressResponseItems'] as List)
+              .first;
+      if (firstAddr is Map) {
+        outer['selectedAddress'] = jsonEncode(firstAddr);
+        if (firstAddr['id'] != null) {
+          outer['selectedAddressId'] = jsonEncode(firstAddr['id']);
+        }
+      }
+    }
+
     outer['eventData'] = jsonEncode({
       'isLoggedIn': true,
       'platform': 'web',
@@ -2416,15 +2521,24 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
           function fixUserStatusesInString(str, wantUrlEncoded) {
             if (typeof str !== 'string') return str;
-            var isUrlEncoded = str.indexOf('%7B') !== -1 || str.indexOf('%22') !== -1;
+            var trimmed = str.trim();
+            var isUrlEncoded = trimmed.indexOf('%7B') === 0 || trimmed.indexOf('%22') === 0;
             try {
               var raw = isUrlEncoded ? decodeURIComponent(str) : str;
-              raw = raw.replace(/("customerIsLoggedInForFirstTime"\s*:\s*)true/g, '$1false');
-              raw = raw.replace(/(\\"customerIsLoggedInForFirstTime\\"\s*:\s*)true/g, '$1false');
-              raw = raw.replace(/("state"\s*:\s*)false/g, '$1true');
-              raw = raw.replace(/(\\"state\\"\s*:\s*)false/g, '$1true');
-              raw = raw.replace(/("stateCode"\s*:\s*)0/g, '$11');
-              raw = raw.replace(/(\\"stateCode\\"\s*:\s*)0/g, '$11');
+              if (raw.indexOf('customerIsLoggedInForFirstTime') !== -1 || raw.indexOf('CustomerIsLoggedInForFirstTime') !== -1) {
+                raw = raw.replace(/("customerIsLoggedInForFirstTime"\s*:\s*)true/g, '$1false');
+                raw = raw.replace(/(\\"customerIsLoggedInForFirstTime\\"\s*:\s*)true/g, '$1false');
+                raw = raw.replace(/("CustomerIsLoggedInForFirstTime"\s*:\s*)true/g, '$1false');
+                raw = raw.replace(/(\\"CustomerIsLoggedInForFirstTime\\"\s*:\s*)true/g, '$1false');
+                raw = raw.replace(/("state"\s*:\s*)false/g, '$1true');
+                raw = raw.replace(/(\\"state\\"\s*:\s*)false/g, '$1true');
+                raw = raw.replace(/("stateCode"\s*:\s*)0/g, '$11');
+                raw = raw.replace(/(\\"stateCode\\"\s*:\s*)0/g, '$11');
+                raw = raw.replace(/("hasAddress"\s*:\s*)false/g, '$1true');
+                raw = raw.replace(/(\\"hasAddress\\"\s*:\s*)false/g, '$1true');
+                raw = raw.replace(/("HasAddress"\s*:\s*)false/g, '$1true');
+                raw = raw.replace(/(\\"HasAddress\\"\s*:\s*)false/g, '$1true');
+              }
               raw = raw.replace(/("isLoggedIn"\s*:\s*)false/g, '$1true');
               raw = raw.replace(/(\\"isLoggedIn\\"\s*:\s*)false/g, '$1true');
               raw = raw.replace(/("unauthorizedRequest"\s*:\s*)true/g, '$1false');
@@ -2444,12 +2558,14 @@ class _BrowserScreenState extends State<BrowserScreen> {
                 obj.customerIsLoggedInForFirstTime = false;
                 obj.state = true;
                 obj.stateCode = 1;
+                obj.hasAddress = true;
               }
               if ('CustomerIsLoggedInForFirstTime' in obj) {
                 obj.CustomerIsLoggedInForFirstTime = false;
                 obj.State = true;
                 obj.StateCode = 1;
                 obj.HasName = true;
+                obj.HasAddress = true;
               }
               if ('unauthorizedRequest' in obj && obj.unauthorizedRequest === true) {
                 obj.unauthorizedRequest = false;
@@ -2530,14 +2646,36 @@ class _BrowserScreenState extends State<BrowserScreen> {
             if (!addrResp || typeof addrResp !== 'object') return null;
             try {
               var d = addrResp.data;
+              var arr = null;
               if (d && Array.isArray(d.customerAddressResponseItems)) {
-                var arr = d.customerAddressResponseItems;
+                arr = d.customerAddressResponseItems;
+              } else if (Array.isArray(d)) {
+                arr = d;
+                addrResp = {
+                  success: true,
+                  hasValidationError: false,
+                  message: null,
+                  data: {
+                    customerAddressResponseItems: arr,
+                    hasNextPage: false,
+                    hasPreviousPage: false,
+                    pageIndex: 1,
+                    pageSize: 15,
+                    totalCount: arr.length,
+                    totalPages: 1
+                  },
+                  errorCode: null
+                };
+                d = addrResp.data;
+              }
+              if (Array.isArray(arr)) {
                 if (arr.length > 0) {
                   var hasDef = false;
                   for (var i = 0; i < arr.length; i++) {
-                    if (arr[i] && arr[i].isDefault === true) {
-                      hasDef = true;
-                      break;
+                    if (arr[i] && typeof arr[i] === 'object') {
+                      if (arr[i].isDefault === true) {
+                        hasDef = true;
+                      }
                     }
                   }
                   if (!hasDef && arr[0] && typeof arr[0] === 'object') {
@@ -2555,66 +2693,150 @@ class _BrowserScreenState extends State<BrowserScreen> {
             return null;
           }
 
+          function buildReactAddressResponseFromCached(cachedResp) {
+            var items = (cachedResp && cachedResp.data && Array.isArray(cachedResp.data.customerAddressResponseItems))
+              ? cachedResp.data.customerAddressResponseItems
+              : [];
+            return {
+              success: true,
+              hasValidationError: false,
+              message: null,
+              data: items,
+              errorCode: null
+            };
+          }
+
+          function isRealServerAddressItem(item) {
+            if (!item || typeof item !== 'object') return false;
+            var idNum = Number(item.id || 0);
+            var addrIdStr = String(item.addressId || '');
+            if (addrIdStr.indexOf('addr-') === 0) return false;
+            return idNum > 0;
+          }
+
+          function hasRealServerAddress(addrResp) {
+            var r = addrResp || (window.__nxState && window.__nxState.cachedAddressResp);
+            if (!r || !r.data || !Array.isArray(r.data.customerAddressResponseItems)) return false;
+            var arr = r.data.customerAddressResponseItems;
+            for (var i = 0; i < arr.length; i++) {
+              if (isRealServerAddressItem(arr[i])) return true;
+            }
+            return false;
+          }
+
+          function getDefaultAddressItem(addrResp) {
+            var r = addrResp || (window.__nxState && window.__nxState.cachedAddressResp);
+            if (!r || !r.data || !Array.isArray(r.data.customerAddressResponseItems) || r.data.customerAddressResponseItems.length === 0) {
+              return null;
+            }
+            var arr = r.data.customerAddressResponseItems;
+            for (var i = 0; i < arr.length; i++) {
+              if (arr[i] && arr[i].isDefault) return arr[i];
+            }
+            return arr[0];
+          }
+
           function syncAddressToSessionStorage(addrResp) {
             try {
               var norm = normalizeAddressResponseObject(addrResp);
               if (!norm || !norm.data) return;
               var st = window.__nxState;
               if (!st) return;
+
+              // اگر قبلاً آدرس واقعی سرور در کش بوده، اجازه ندهیم با آدرس مصنوعی (addr-...) بازنویسی شود
+              if (hasRealServerAddress(st.cachedAddressResp) && !hasRealServerAddress(norm)) {
+                return;
+              }
+
               st.cachedAddressResp = norm;
               try {
                 origSetItem.call(localStorage, '__nx_addr_cache_' + st.targetKey, JSON.stringify(norm));
               } catch (_) {}
-              var altCid = st.savedUserObj && (st.savedUserObj.alternativeCustomerId || st.savedUserObj.id);
+
+              var altCid = st.savedUserObj && st.savedUserObj.alternativeCustomerId;
+              var mainId = st.savedUserObj && st.savedUserObj.id;
               if (altCid) {
                 origSetItem.call(sessionStorage, 'ok_addr_' + altCid + '_', JSON.stringify(norm.data));
               }
+              if (mainId && String(mainId) !== String(altCid)) {
+                origSetItem.call(sessionStorage, 'ok_addr_' + mainId + '_', JSON.stringify(norm.data));
+              }
+
               var items = norm.data.customerAddressResponseItems;
               if (Array.isArray(items) && items.length > 0) {
-                var defItem = items[0];
-                for (var i = 0; i < items.length; i++) {
-                  if (items[i] && items[i].isDefault) {
-                    defItem = items[i];
-                    break;
-                  }
-                }
+                var defItem = getDefaultAddressItem(norm);
                 if (defItem) {
                   if (defItem.cityId) origSetItem.call(localStorage, 'city_id', String(defItem.cityId));
                   if (defItem.cityName) origSetItem.call(localStorage, 'city_name', String(defItem.cityName));
-                  // همگام‌سازی استور نقشه (Zustand map) با مختصات آدرس انتخاب‌شده
-                  if (defItem.lat && defItem.lng) {
-                    origSetItem.call(localStorage, 'map', JSON.stringify({
-                      state: {
-                        discovery: {
-                          latitude: Number(defItem.lat),
-                          longitude: Number(defItem.lng),
-                          lat: Number(defItem.lat),
-                          lng: Number(defItem.lng),
-                          cityId: Number(defItem.cityId) || 129,
-                          cityName: defItem.cityName || 'تهران',
-                          address: defItem.address || '',
-                          plaque: defItem.plaque || '1',
-                          unit: defItem.unit || '1',
-                          submitted: true
-                        }
-                      },
-                      version: 0
-                    }));
+                  // برای کاربر لاگین‌شده دارای آدرس، discovery در استور map باید خالی {} باشد تا اوکالا از selectedDefaultAddress کامل (دارای id و addressId) در سبد خرید و چک‌اوت استفاده کند
+                  origSetItem.call(localStorage, 'map', JSON.stringify({
+                    state: { discovery: {} },
+                    version: 0
+                  }));
+
+                  // همگام‌سازی کامل selectedAddress، selectedAddressId و hasAddress در persist:root و user
+                  if (st.savedUserObj) {
+                    st.savedUserObj.hasAddress = true;
                   }
+                  if (st.savedUserInfoPascal) {
+                    st.savedUserInfoPascal.HasAddress = true;
+                  }
+                  try {
+                    var rawPRoot = localStorage.getItem('persist:root') || st.savedPersistRoot;
+                    if (rawPRoot) {
+                      var pRootObj = JSON.parse(rawPRoot);
+                      if (pRootObj && typeof pRootObj === 'object') {
+                        pRootObj.selectedAddress = JSON.stringify(defItem);
+                        if (defItem.id) {
+                          pRootObj.selectedAddressId = JSON.stringify(defItem.id);
+                        }
+                        if (pRootObj.user) {
+                          var uSlice = JSON.parse(pRootObj.user);
+                          if (uSlice && uSlice.user) {
+                            uSlice.user.hasAddress = true;
+                            pRootObj.user = JSON.stringify(uSlice);
+                          }
+                        }
+                        if (pRootObj.mapInfo) {
+                          var mInfo = JSON.parse(pRootObj.mapInfo);
+                          if (mInfo && typeof mInfo === 'object') {
+                            mInfo.discovery = {};
+                            if (defItem.lat && defItem.lng) {
+                              mInfo.viewport = { latitude: Number(defItem.lat), longitude: Number(defItem.lng) };
+                              mInfo.defaultViewPort = {
+                                latitude: Number(defItem.lat),
+                                longitude: Number(defItem.lng),
+                                id: Number(defItem.cityId || 129),
+                                name: String(defItem.cityName || 'تهران')
+                              };
+                            }
+                            pRootObj.mapInfo = JSON.stringify(mInfo);
+                          }
+                        }
+                        var updatedPRoot = JSON.stringify(pRootObj);
+                        st.savedPersistRoot = updatedPRoot;
+                        origSetItem.call(localStorage, 'persist:root', updatedPRoot);
+                      }
+                    }
+                  } catch (_) {}
                 }
               }
             } catch (_) {}
           }
 
-          // بازیابی آدرس ذخیره‌شده در همین نشست (اگر کاربر روی نقشه آدرسی ثبت کرده باشد)
+          // بازیابی آدرس ذخیره‌شده در همین نشست (فقط در صورتی که آدرس واقعی سرور باشد)
           var persistedCustomAddr = null;
           try {
             var rawCustomAddr = localStorage.getItem('__nx_addr_cache_' + targetKey);
             if (rawCustomAddr) {
-              persistedCustomAddr = normalizeAddressResponseObject(JSON.parse(rawCustomAddr));
+              var candAddr = normalizeAddressResponseObject(JSON.parse(rawCustomAddr));
+              if (hasRealServerAddress(candAddr)) {
+                persistedCustomAddr = candAddr;
+              }
             }
           } catch (_) {}
 
+          var normalizedInitAddr = normalizeAddressResponseObject(initAddrResp);
           var prevKey = window.__nxState ? window.__nxState.targetKey : null;
           window.__nxState = {
             targetKey: targetKey,
@@ -2626,11 +2848,13 @@ class _BrowserScreenState extends State<BrowserScreen> {
             zustandUJson: initZustandUJson || buildZustandUserString(parsedUserObj, initTMs, initRTk),
             savedUserObj: parsedUserObj,
             savedUserInfoPascal: parsedUserInfoPascal,
+            pendingAddrDraft: null,
+            ensuringServerAddr: false,
             lastSubmittedAddrItem: (prevKey === targetKey && window.__nxState && window.__nxState.lastSubmittedAddrItem)
               ? window.__nxState.lastSubmittedAddrItem
               : null,
-            cachedAddressResp: persistedCustomAddr ||
-              normalizeAddressResponseObject(initAddrResp) ||
+            cachedAddressResp: normalizedInitAddr ||
+              persistedCustomAddr ||
               ((prevKey === targetKey && window.__nxState && window.__nxState.cachedAddressResp)
                 ? window.__nxState.cachedAddressResp
                 : null),
@@ -2656,6 +2880,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
                 setRawCookie('user=' + cleanUCk + '; path=/; max-age=7776000; SameSite=Lax');
                 setRawCookie('user=' + cleanUCk + '; domain=.okala.com; path=/; max-age=7776000; Secure; SameSite=None');
               }
+              setRawCookie('hasAddress=true; path=/; max-age=7776000; SameSite=Lax');
+              setRawCookie('hasAddress=true; domain=.okala.com; path=/; max-age=7776000; Secure; SameSite=None');
               // حذف کامل کوکی refresh_token تا در صورت منقضی بودن، BFF اوکالا نشست را باطل نکند
               setRawCookie('refresh_token=; path=/; max-age=0');
               setRawCookie('refresh_token=; domain=.okala.com; path=/; max-age=0; Secure; SameSite=None');
@@ -2753,10 +2979,18 @@ class _BrowserScreenState extends State<BrowserScreen> {
             return lower.indexOf('/api/bff/') !== -1;
           }
 
-          function isAddressListUrl(urlStr) {
+          function isPagingAddressListUrl(urlStr) {
             var lower = String(urlStr || '').toLowerCase();
-            return lower.indexOf('getcustomeraddresseswithpaging') !== -1 ||
-                   lower.indexOf('customeraddressforreact') !== -1;
+            return lower.indexOf('getcustomeraddresseswithpaging') !== -1;
+          }
+
+          function isReactAddressListUrl(urlStr) {
+            var lower = String(urlStr || '').toLowerCase();
+            return lower.indexOf('customeraddressforreact') !== -1;
+          }
+
+          function isAddressListUrl(urlStr) {
+            return isPagingAddressListUrl(urlStr) || isReactAddressListUrl(urlStr);
           }
 
           function isAddOrEditAddressUrl(urlStr) {
@@ -2802,11 +3036,12 @@ class _BrowserScreenState extends State<BrowserScreen> {
               st.lastSubmittedAddrItem = addrItem;
               var existingItems = [];
               if (st.cachedAddressResp && st.cachedAddressResp.data && Array.isArray(st.cachedAddressResp.data.customerAddressResponseItems)) {
-                existingItems = st.cachedAddressResp.data.customerAddressResponseItems.slice();
-              }
-              for (var i = 0; i < existingItems.length; i++) {
-                if (existingItems[i] && typeof existingItems[i] === 'object') {
-                  existingItems[i].isDefault = false;
+                for (var j = 0; j < st.cachedAddressResp.data.customerAddressResponseItems.length; j++) {
+                  var ex = st.cachedAddressResp.data.customerAddressResponseItems[j];
+                  if (ex && isRealServerAddressItem(ex) && Number(ex.id) !== Number(addrItem.id)) {
+                    ex.isDefault = false;
+                    existingItems.push(ex);
+                  }
                 }
               }
               addrItem.isDefault = true;
@@ -2828,16 +3063,61 @@ class _BrowserScreenState extends State<BrowserScreen> {
                 errorCode: null
               };
               syncAddressToSessionStorage(wrapped);
+              syncCookiesNow();
+            } catch (_) {}
+          }
 
-              // اگر کاربر در صفحه بدون آدرس (/) بود، پس از ذخیره آدرس به صفحه فروشگاه‌ها هدایت شود
-              setTimeout(function() {
-                try {
+          function syncRealAddressWithServer(draftObj, redirectHomeToStores) {
+            try {
+              var st = window.__nxState;
+              if (!st) return;
+              var payload = draftObj || st.pendingAddrDraft || {};
+              if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
+                st.ensuringServerAddr = true;
+                window.flutter_inappwebview.callHandler('ensureAddressOnServer', payload).then(function(realAddrResp) {
+                  st.ensuringServerAddr = false;
+                  if (realAddrResp && typeof realAddrResp === 'object') {
+                    syncAddressToSessionStorage(realAddrResp);
+                    syncCookiesNow();
+                  }
+                  if (redirectHomeToStores) {
+                    if (window.location.pathname === '/' || window.location.pathname === '') {
+                      window.location.href = '/stores';
+                    }
+                  }
+                }).catch(function() {
+                  st.ensuringServerAddr = false;
+                  if (redirectHomeToStores && (window.location.pathname === '/' || window.location.pathname === '')) {
+                    window.location.href = '/stores';
+                  }
+                });
+              } else if (redirectHomeToStores) {
+                setTimeout(function() {
                   if (window.location.pathname === '/' || window.location.pathname === '') {
                     window.location.href = '/stores';
                   }
-                } catch (_) {}
-              }, 650);
+                }, 500);
+              }
             } catch (_) {}
+          }
+
+          function handleAddAddressServerResponse(rawData) {
+            try {
+              var st = window.__nxState || {};
+              var draft = st.pendingAddrDraft || st.lastSubmittedAddrItem || {};
+              var parsed = (typeof rawData === 'string') ? JSON.parse(rawData) : rawData;
+              if (parsed && typeof parsed === 'object') {
+                var srvData = parsed.data;
+                if (srvData && typeof srvData === 'object' && !Array.isArray(srvData) && Number(srvData.id) > 0) {
+                  var merged = Object.assign({}, draft, srvData, { isDefault: true });
+                  recordSubmittedAddressAsDefault(merged);
+                } else if (typeof srvData === 'number' && srvData > 0) {
+                  var mergedNum = Object.assign({}, draft, { id: srvData, addressId: String(srvData), isDefault: true });
+                  recordSubmittedAddressAsDefault(mergedNum);
+                }
+              }
+            } catch (_) {}
+            syncRealAddressWithServer(window.__nxState && window.__nxState.pendingAddrDraft, true);
           }
 
           function buildSyntheticTokenResponse() {
@@ -3087,22 +3367,23 @@ class _BrowserScreenState extends State<BrowserScreen> {
               if (isAddOrEditAddressUrl(urlStr)) {
                 var cleanPlaque = toEnDigits(obj.plaque != null ? obj.plaque : '1').trim() || '1';
                 var cleanUnit = toEnDigits(obj.unit != null ? obj.unit : '1').trim() || '1';
-                var cleanLat = Number(obj.lat || obj.latitude) || 35.69975;
-                var cleanLng = Number(obj.lng || obj.longitude) || 51.33551;
+                var cleanLat = Number(obj.lat || obj.latitude) || 35.7005;
+                var cleanLng = Number(obj.lng || obj.longitude) || 51.3455;
                 var cleanAddrText = (obj.address && String(obj.address).trim() !== '')
                   ? String(obj.address).trim()
-                  : 'آدرس ثبت شده از نقشه';
+                  : 'تهران، خیابان آزادی';
                 var cleanTypeId = (Number(obj.addressTypeId) >= 1 && Number(obj.addressTypeId) <= 3)
                   ? Number(obj.addressTypeId)
                   : 3;
                 var cleanCityId = Number(obj.cityId) || Number(localStorage.getItem('city_id')) || 129;
 
-                // ساخت آیتم آدرس کامل برای ذخیره آنی در کش کلاینت و BFF
-                var synthAddrItem = {
-                  additionalAddressDetails: obj.additionalAddressDetails || null,
+                var draftAddrItem = {
+                  additionalAddressDetails: (obj.additionalAddressDetails && String(obj.additionalAddressDetails).trim() !== '')
+                    ? String(obj.additionalAddressDetails).trim()
+                    : null,
                   addressId: 'addr-' + Date.now(),
                   cerberusId: uObj.alternativeId || '',
-                  id: Number(obj.id) > 0 ? Number(obj.id) : (Date.now() % 100000000),
+                  id: Number(obj.id) > 0 ? Number(obj.id) : 0,
                   address: cleanAddrText,
                   cityId: cleanCityId,
                   cityName: localStorage.getItem('city_name') || 'تهران',
@@ -3113,7 +3394,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   isDefault: true,
                   lat: cleanLat,
                   lng: cleanLng,
-                  transferee: Boolean(obj.transferee),
+                  transferee: (obj.ImTransferee && obj.transferee) ? String(obj.transferee).trim() : null,
                   stateCode: 1,
                   unit: cleanUnit,
                   plaque: cleanPlaque,
@@ -3121,8 +3402,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   sectorName: '',
                   sectorPartId: 0,
                   sectorPartName: '',
-                  mobilePhone: uObj.mobilePhone || '',
-                  title: obj.title || null,
+                  mobilePhone: (obj.ImTransferee && obj.mobilePhone) ? toEnDigits(obj.mobilePhone).trim() : '',
+                  title: (obj.title && String(obj.title).trim() !== '') ? String(obj.title).trim() : null,
                   addressTypeId: cleanTypeId,
                   storeId: null,
                   zipPostalCode: null,
@@ -3134,35 +3415,62 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   modifiedOn: new Date().toISOString(),
                   tenant: 'Okala'
                 };
-                recordSubmittedAddressAsDefault(synthAddrItem);
+                st.pendingAddrDraft = draftAddrItem;
+                st.lastSubmittedAddrItem = draftAddrItem;
 
-                // تنظیم دقیق فیلدها مطابق استاندارد سرور Voyager و Main1.py (جلوگیری از سرریز Int32 در oprationDuration)
-                obj.id = Number(obj.id) > 0 ? Number(obj.id) : 0;
-                if (validCid > 0) {
-                  obj.customerId = validCid;
+                // ساخت بدنه استاندارد دقیقاً مطابق Main1.py برای ثبت قطعی آدرس روی سرور Voyager
+                var cleanPayload = {
+                  id: Number(obj.id) > 0 ? Number(obj.id) : 0,
+                  customerId: validCid > 0 ? validCid : (Number(obj.customerId) || 0),
+                  mobilePhone: (obj.ImTransferee && obj.mobilePhone) ? toEnDigits(obj.mobilePhone).trim() : '',
+                  ShoppingSectorPartId: String(obj.ShoppingSectorPartId || '0'),
+                  shoppingSectorId: String(obj.shoppingSectorId || '0'),
+                  plaque: cleanPlaque,
+                  unit: cleanUnit,
+                  lat: cleanLat,
+                  lng: cleanLng,
+                  title: (obj.title && String(obj.title).trim() !== '') ? String(obj.title).trim() : null,
+                  addressTypeId: cleanTypeId,
+                  oprationDuration: 14500,
+                  address: cleanAddrText,
+                  mapPlatform: 'ParsiMap',
+                  cityId: cleanCityId
+                };
+                if (draftAddrItem.additionalAddressDetails) {
+                  cleanPayload.additionalAddressDetails = draftAddrItem.additionalAddressDetails;
                 }
-                obj.plaque = cleanPlaque;
-                obj.unit = cleanUnit;
-                obj.lat = cleanLat;
-                obj.lng = cleanLng;
-                obj.address = cleanAddrText;
-                obj.addressTypeId = cleanTypeId;
-                obj.oprationDuration = 14500;
-                obj.ShoppingSectorPartId = String(obj.ShoppingSectorPartId || '0');
-                obj.shoppingSectorId = String(obj.shoppingSectorId || '0');
-                obj.mobilePhone = (obj.transferee && obj.mobilePhone) ? toEnDigits(obj.mobilePhone).trim() : '';
-                obj.mapPlatform = obj.mapPlatform || 'ParsiMap';
-                if (!obj.cityId || Number(obj.cityId) <= 0) {
-                  obj.cityId = cleanCityId;
+                if (draftAddrItem.transferee) {
+                  cleanPayload.transferee = draftAddrItem.transferee;
                 }
-                return JSON.stringify(obj);
+                return JSON.stringify(cleanPayload);
               }
 
-              if ('customerId' in obj && validCid > 0) {
-                if (!obj.customerId || Number(obj.customerId) <= 0 || Number(obj.customerId) !== validCid) {
-                  obj.customerId = validCid;
-                  return JSON.stringify(obj);
+              var modified = false;
+              if ('customerId' in obj && validCid > 0 && (!obj.customerId || Number(obj.customerId) <= 0)) {
+                obj.customerId = validCid;
+                modified = true;
+              }
+              var defAddr = getDefaultAddressItem(st.cachedAddressResp);
+              if (defAddr && isRealServerAddressItem(defAddr)) {
+                if ('customerAddressId' in obj && (!obj.customerAddressId || String(obj.customerAddressId).indexOf('addr-') === 0)) {
+                  obj.customerAddressId = defAddr.id;
+                  modified = true;
                 }
+                if ('addressId' in obj && (!obj.addressId || String(obj.addressId).indexOf('addr-') === 0)) {
+                  obj.addressId = defAddr.addressId || defAddr.id;
+                  modified = true;
+                }
+                if ('latitude' in obj && !obj.latitude && defAddr.lat) {
+                  obj.latitude = defAddr.lat;
+                  modified = true;
+                }
+                if ('longitude' in obj && !obj.longitude && defAddr.lng) {
+                  obj.longitude = defAddr.lng;
+                  modified = true;
+                }
+              }
+              if (modified) {
+                return JSON.stringify(obj);
               }
             } catch (_) {}
             return body;
@@ -3246,7 +3554,10 @@ class _BrowserScreenState extends State<BrowserScreen> {
             if (lower.indexOf('saveuserinfo') !== -1) {
               return 'false';
             }
-            if (isAddressListUrl(lower)) {
+            if (isReactAddressListUrl(lower)) {
+              return JSON.stringify(buildReactAddressResponseFromCached(buildDefaultAddressData()));
+            }
+            if (isPagingAddressListUrl(lower)) {
               return JSON.stringify(buildDefaultAddressData());
             }
             if (lower.indexOf('discounts/customer') !== -1) {
@@ -3597,28 +3908,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
                     if (isBffUrl(urlStr)) {
                       var bffClone = response.clone();
                       return bffClone.text().then(function(txt) {
-                        try {
-                          var checkParsed = JSON.parse(txt);
-                          var missStores = urlStr.indexOf('stores') !== -1 &&
-                            (!checkParsed || !checkParsed.data || !checkParsed.data.stores);
-                          if (missStores) {
-                            return origFetch.call(window, urlStr, { credentials: 'omit' }).then(function(pubResp) {
-                              return pubResp.text().then(function(pubTxt) {
-                                return new Response(repairBffResponseText(pubTxt), {
-                                  status: 200,
-                                  statusText: 'OK',
-                                  headers: { 'Content-Type': 'application/json; charset=utf-8' }
-                                });
-                              });
-                            }).catch(function() {
-                              return new Response(repairBffResponseText(txt), {
-                                status: 200,
-                                statusText: 'OK',
-                                headers: response.headers
-                              });
-                            });
-                          }
-                        } catch (_) {}
                         var repairedBff = repairBffResponseText(txt);
                         return new Response(repairedBff, {
                           status: 200,
@@ -3632,18 +3921,19 @@ class _BrowserScreenState extends State<BrowserScreen> {
                     if (cType.indexOf('application/json') !== -1) {
                       var clone = response.clone();
                       return clone.text().then(function(txt) {
-                        if (isAddOrEditAddressUrl(urlStr) && txt && (txt.indexOf('"hasValidationError":true') !== -1 || txt.indexOf('"success":false') !== -1)) {
-                          return new Response(buildAddAddressSuccessResponse(), {
-                            status: 200,
-                            statusText: 'OK',
-                            headers: response.headers
-                          });
+                        if (isAddOrEditAddressUrl(urlStr)) {
+                          handleAddAddressServerResponse(txt);
+                          if (txt && (txt.indexOf('"hasValidationError":true') !== -1 || txt.indexOf('"success":false') !== -1)) {
+                            return new Response(buildAddAddressSuccessResponse(), {
+                              status: 200,
+                              statusText: 'OK',
+                              headers: response.headers
+                            });
+                          }
                         }
                         if (txt && (
                             txt.indexOf('customerIsLoggedInForFirstTime') !== -1 ||
                             txt.indexOf('CustomerIsLoggedInForFirstTime') !== -1 ||
-                            txt.indexOf('"state":false') !== -1 ||
-                            txt.indexOf('"state": false') !== -1 ||
                             txt.indexOf('"unauthorizedRequest":true') !== -1 ||
                             txt.indexOf('"unauthorizedRequest": true') !== -1
                         )) {
@@ -3732,6 +4022,10 @@ class _BrowserScreenState extends State<BrowserScreen> {
                           return '';
                         }
                         if (isAddOrEditAddressUrl(self.__nxUrl)) {
+                          if (!self.__nxAddrSynced) {
+                            self.__nxAddrSynced = true;
+                            handleAddAddressServerResponse(rawTxt);
+                          }
                           if (!rawTxt || rawTxt.indexOf('"hasValidationError":true') !== -1 || rawTxt.indexOf('"success":false') !== -1) {
                             return buildAddAddressSuccessResponse();
                           }
@@ -3747,7 +4041,18 @@ class _BrowserScreenState extends State<BrowserScreen> {
                           } catch (_) {}
                           return buildSyntheticTokenResponse();
                         }
-                        if (isAddressListUrl(self.__nxUrl) && typeof rawTxt === 'string' && rawTxt.length > 0) {
+                        if (isReactAddressListUrl(self.__nxUrl) && typeof rawTxt === 'string' && rawTxt.length > 0) {
+                          try {
+                            var reactAddrObj = JSON.parse(rawTxt);
+                            if (reactAddrObj && Array.isArray(reactAddrObj.data) && reactAddrObj.data.length > 0) {
+                              syncAddressToSessionStorage(reactAddrObj);
+                              return JSON.stringify(buildReactAddressResponseFromCached(window.__nxState.cachedAddressResp));
+                            } else if (window.__nxState && window.__nxState.cachedAddressResp) {
+                              return JSON.stringify(buildReactAddressResponseFromCached(window.__nxState.cachedAddressResp));
+                            }
+                          } catch (_) {}
+                        }
+                        if (isPagingAddressListUrl(self.__nxUrl) && typeof rawTxt === 'string' && rawTxt.length > 0) {
                           try {
                             var addrObj = JSON.parse(rawTxt);
                             var itemsArr = addrObj && addrObj.data && addrObj.data.customerAddressResponseItems;
@@ -3768,8 +4073,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
                         if (typeof rawTxt === 'string' && (
                             rawTxt.indexOf('customerIsLoggedInForFirstTime') !== -1 ||
                             rawTxt.indexOf('CustomerIsLoggedInForFirstTime') !== -1 ||
-                            rawTxt.indexOf('"state":false') !== -1 ||
-                            rawTxt.indexOf('"state": false') !== -1 ||
                             rawTxt.indexOf('"unauthorizedRequest":true') !== -1 ||
                             rawTxt.indexOf('"unauthorizedRequest": true') !== -1
                         )) {
@@ -3797,6 +4100,10 @@ class _BrowserScreenState extends State<BrowserScreen> {
                           rawResp = responseProtoDesc.get.call(self);
                         } catch (_) {}
                         if (isAddOrEditAddressUrl(self.__nxUrl)) {
+                          if (!self.__nxAddrSynced) {
+                            self.__nxAddrSynced = true;
+                            handleAddAddressServerResponse(rawResp);
+                          }
                           var isErr = false;
                           if (typeof rawResp === 'string') {
                             isErr = rawResp.indexOf('"hasValidationError":true') !== -1 || rawResp.indexOf('"success":false') !== -1;
@@ -3831,7 +4138,27 @@ class _BrowserScreenState extends State<BrowserScreen> {
                           }
                           return synStr;
                         }
-                        if (isAddressListUrl(self.__nxUrl)) {
+                        if (isReactAddressListUrl(self.__nxUrl)) {
+                          if (typeof rawResp === 'string' && rawResp.length > 0) {
+                            try {
+                              var rObj = JSON.parse(rawResp);
+                              if (rObj && Array.isArray(rObj.data) && rObj.data.length > 0) {
+                                syncAddressToSessionStorage(rObj);
+                                return JSON.stringify(buildReactAddressResponseFromCached(window.__nxState.cachedAddressResp));
+                              } else if (window.__nxState && window.__nxState.cachedAddressResp) {
+                                return JSON.stringify(buildReactAddressResponseFromCached(window.__nxState.cachedAddressResp));
+                              }
+                            } catch (_) {}
+                          } else if (rawResp && typeof rawResp === 'object') {
+                            if (Array.isArray(rawResp.data) && rawResp.data.length > 0) {
+                              syncAddressToSessionStorage(rawResp);
+                              return buildReactAddressResponseFromCached(window.__nxState.cachedAddressResp);
+                            } else if (window.__nxState && window.__nxState.cachedAddressResp) {
+                              return buildReactAddressResponseFromCached(window.__nxState.cachedAddressResp);
+                            }
+                          }
+                        }
+                        if (isPagingAddressListUrl(self.__nxUrl)) {
                           if (typeof rawResp === 'string' && rawResp.length > 0) {
                             try {
                               var aObj = JSON.parse(rawResp);
@@ -3869,14 +4196,18 @@ class _BrowserScreenState extends State<BrowserScreen> {
                         if (typeof rawResp === 'string') {
                           if (rawResp.indexOf('customerIsLoggedInForFirstTime') !== -1 ||
                               rawResp.indexOf('CustomerIsLoggedInForFirstTime') !== -1 ||
-                              rawResp.indexOf('"state":false') !== -1 ||
-                              rawResp.indexOf('"state": false') !== -1 ||
                               rawResp.indexOf('"unauthorizedRequest":true') !== -1 ||
                               rawResp.indexOf('"unauthorizedRequest": true') !== -1) {
                             return fixUserStatusesInString(rawResp, false);
                           }
                         } else if (rawResp && typeof rawResp === 'object') {
-                          return fixUserStatusesInObject(rawResp);
+                          if ('customerIsLoggedInForFirstTime' in rawResp ||
+                              'CustomerIsLoggedInForFirstTime' in rawResp ||
+                              'unauthorizedRequest' in rawResp ||
+                              (rawResp.data && typeof rawResp.data === 'object' &&
+                                ('customerIsLoggedInForFirstTime' in rawResp.data || 'CustomerIsLoggedInForFirstTime' in rawResp.data))) {
+                            return fixUserStatusesInObject(rawResp);
+                          }
                         }
                         return rawResp;
                       }
@@ -3932,6 +4263,10 @@ class _BrowserScreenState extends State<BrowserScreen> {
               var curCookies = origCookieDesc && origCookieDesc.get ? origCookieDesc.get.call(document) : document.cookie;
               if (st.tMs && curCookies.indexOf('token=') === -1) {
                 syncCookiesNow();
+              }
+              if ((window.location.pathname.indexOf('/cart') === 0 || window.location.pathname.indexOf('/checkout') === 0) &&
+                  !hasRealServerAddress(st.cachedAddressResp) && !st.ensuringServerAddr) {
+                syncRealAddressWithServer(st.pendingAddrDraft || st.lastSubmittedAddrItem || {}, false);
               }
             } catch (_) {}
           }, 400);
@@ -4251,6 +4586,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
       _activeAccountPhone = resolvedPhone;
       _activeAccountUserId = resolvedUid;
       _activeAccountCerberusId = resolvedCerb;
+      _activeTokenMs = tMs;
 
       if (resolvedPhone.isNotEmpty) {
         NexusAccountRegistry.instance
@@ -4417,6 +4753,27 @@ class _BrowserScreenState extends State<BrowserScreen> {
           isHttpOnly: false,
           isSecure: false,
           sameSite: HTTPCookieSameSitePolicy.LAX,
+        ));
+        cookieFutures.add(cookieManager.setCookie(
+          url: storeUri,
+          name: 'hasAddress',
+          value: 'true',
+          path: '/',
+          expiresDate: futureExpiresMs,
+          isHttpOnly: false,
+          isSecure: false,
+          sameSite: HTTPCookieSameSitePolicy.LAX,
+        ));
+        cookieFutures.add(cookieManager.setCookie(
+          url: storeUri,
+          name: 'hasAddress',
+          value: 'true',
+          domain: '.okala.com',
+          path: '/',
+          expiresDate: futureExpiresMs,
+          isHttpOnly: false,
+          isSecure: true,
+          sameSite: HTTPCookieSameSitePolicy.NONE,
         ));
       }
 
@@ -4923,9 +5280,12 @@ class _BrowserScreenState extends State<BrowserScreen> {
             ],
           ),
         ),
-        body: Stack(
-          children: [
-            InAppWebView(
+        body: SafeArea(
+          top: false,
+          bottom: true,
+          child: Stack(
+            children: [
+              InAppWebView(
               initialUrlRequest: URLRequest(url: WebUri('about:blank')),
               initialUserScripts: UnmodifiableListView<UserScript>([]),
               initialSettings: InAppWebViewSettings(
@@ -4954,6 +5314,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
                       final Map data = args.first as Map;
                       final String? newAcc = data['accessToken']?.toString();
                       final String? newRef = data['refreshToken']?.toString();
+                      if (newAcc != null && newAcc.isNotEmpty) {
+                        _activeTokenMs = newAcc;
+                      }
                       final String curUri = (_currentIndex >= 0 &&
                               _currentIndex < _urls.length)
                           ? _urls[_currentIndex]
@@ -4967,6 +5330,21 @@ class _BrowserScreenState extends State<BrowserScreen> {
                         refreshToken: newRef,
                       );
                     }
+                  },
+                );
+                controller.addJavaScriptHandler(
+                  handlerName: 'ensureAddressOnServer',
+                  callback: (args) async {
+                    Map<String, dynamic> draft = {};
+                    if (args.isNotEmpty && args.first is Map) {
+                      draft = Map<String, dynamic>.from(args.first as Map);
+                    }
+                    final int cid = _parsePositiveInt(
+                        draft['customerId'] ?? _activeAccountUserId);
+                    final Map<String, dynamic>? synced =
+                        await _createServerAddressAndFetchList(
+                            _activeTokenMs, cid, draft);
+                    return synced;
                   },
                 );
                 if (_activeInjectionScript.isNotEmpty &&
@@ -5101,7 +5479,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   ),
                 ),
               ),
-          ],
+            ],
+          ),
         ),
       ),
     );
